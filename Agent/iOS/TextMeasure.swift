@@ -29,7 +29,11 @@ enum TextMeasure {
     }
 
     /// The font a SwiftUI `Text` is drawn in, as far as the debug data and its frame tell.
-    static func swiftUIFont(for info: TextInfo, frameHeight: Double) -> (UIFont, guessed: Bool) {
+    ///
+    /// Without a declared font (a style set by a List section, a button style, …) the guess is
+    /// the text style under which the string, wrapped at the frame's width, is as tall as the
+    /// frame: the font that explains the layout SwiftUI made. Body wins ties (SwiftUI's default).
+    static func swiftUIFont(for info: TextInfo, frame: Rect) -> (UIFont, guessed: Bool) {
         let bold = info.bold ?? false
         if let style = info.textStyle, let ui = styles.first(where: { $0.0 == style })?.1 {
             return (apply(bold: bold, to: UIFont.preferredFont(forTextStyle: ui)), false)
@@ -37,20 +41,22 @@ enum TextMeasure {
         if let size = info.fontSize {
             return (UIFont.systemFont(ofSize: size, weight: bold ? .bold : .regular), false)
         }
-        // No declared font: pick the text style whose line height best divides the frame.
-        var best: (UIFont, Double)?
-        for (_, style) in styles {
-            let font = apply(bold: bold, to: UIFont.preferredFont(forTextStyle: style))
-            let lines = max(1, (frameHeight / font.lineHeight).rounded())
-            let error = abs(frameHeight - lines * font.lineHeight) / lines
-            if best == nil || error < best!.1 { best = (font, error) }
+        let ns = info.string as NSString
+        let width = max(frame.width, 0.01)
+        func error(_ font: UIFont) -> Double {
+            let height = ns.boundingRect(with: CGSize(width: width, height: .greatestFiniteMagnitude),
+                                         options: [.usesLineFragmentOrigin, .usesFontLeading],
+                                         attributes: [.font: font], context: nil).height
+            return abs(Double(ceil(height)) - frame.height)
         }
         let body = apply(bold: bold, to: UIFont.preferredFont(forTextStyle: .body))
-        // Body is SwiftUI's default; keep it unless another style fits clearly better.
-        let bodyLines = max(1, (frameHeight / body.lineHeight).rounded())
-        let bodyError = abs(frameHeight - bodyLines * body.lineHeight) / bodyLines
-        if let best, best.1 + 0.5 < bodyError { return (best.0, true) }
-        return (body, true)
+        var best = (font: body, error: error(body))
+        for (_, style) in styles {
+            let font = apply(bold: bold, to: UIFont.preferredFont(forTextStyle: style))
+            let e = error(font)
+            if e + 0.5 < best.error { best = (font, e) }
+        }
+        return (best.font, true)
     }
 
     private static func apply(bold: Bool, to font: UIFont) -> UIFont {

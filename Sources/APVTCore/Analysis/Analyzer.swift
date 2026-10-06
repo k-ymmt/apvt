@@ -167,7 +167,10 @@ public struct Analyzer: Sendable {
         var issues: [Issue] = []
         for e in content {
             let inside = e.controlAncestor.map { " (inside \(Describe.node(s[$0])))" } ?? ""
+            // 0x0 is not drawn at all (SwiftUI keeps such Texts for accessibility); a zero width
+            // with height is a text stood on end, one character per line.
             if let text = e.node.text, let word = text.longestWordWidth, word > 0, e.frame.width + 1 < word,
+               e.frame.height >= (text.lineHeight ?? 1) * 0.5,
                e.node.source == .swiftui || (text.maxLines ?? 1) != 1 {
                 let words: [Substring] = text.string.split(whereSeparator: { (c: Character) in c.isWhitespace })
                 let longest = words.max(by: { $0.count < $1.count }).map { String($0) } ?? text.string
@@ -258,7 +261,9 @@ public struct Analyzer: Sendable {
 
     private func smallTargets(_ content: [IndexedSnapshot.Entry], skip: Set<Int>) -> [Issue] {
         var issues: [Issue] = []
-        for e in content where e.node.role == .control && !skip.contains(e.ref) && !e.node.has("disabled") {
+        // Text fields are left out: in a Form or List the whole row focuses them.
+        for e in content where e.node.role == .control && !skip.contains(e.ref) && !e.node.has("disabled")
+            && !e.node.type.contains("TextField") && !e.node.type.contains("SecureField") {
             let w = e.frame.width, h = e.frame.height
             guard w >= 1, h >= 1, min(w, h) < minimumTarget else { continue }
             issues.append(Issue(rule: .smallTarget, severity: .warning, ref: e.ref,
@@ -271,7 +276,7 @@ public struct Analyzer: Sendable {
     private func brokenConstraints(_ s: IndexedSnapshot) -> [Issue] {
         var issues: [Issue] = []
         var seen = Set<String>()
-        for b in s.snapshot.constraintBreaks {
+        for b in s.snapshot.constraintBreaks where b.system != true {
             let broken = Describe.constraint(b.broken)
             guard seen.insert(broken).inserted else { continue }
             // Point at the first involved view apvt can find by identifier.

@@ -14,7 +14,7 @@ struct APVTSampleApp: App {
 }
 
 enum Screen: String, CaseIterable, Identifiable {
-    case profile, pricing, badge, header, form, uikit
+    case profile, pricing, badge, header, form, uikit, settings, feed
 
     var id: String { rawValue }
 
@@ -26,6 +26,8 @@ enum Screen: String, CaseIterable, Identifiable {
         case .header: "Header under the status bar"
         case .form: "Form"
         case .uikit: "UIKit Auto Layout"
+        case .settings: "Settings (clean)"
+        case .feed: "Feed (clean)"
         }
     }
 
@@ -37,6 +39,8 @@ enum Screen: String, CaseIterable, Identifiable {
         case .header: HeaderScreen()
         case .form: FormScreen()
         case .uikit: UIKitScreen().ignoresSafeArea(edges: .bottom)
+        case .settings: SettingsScreen()
+        case .feed: FeedScreen()
         }
     }
 }

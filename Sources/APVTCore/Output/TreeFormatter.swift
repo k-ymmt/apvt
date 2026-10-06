@@ -23,10 +23,6 @@ public struct TreeFormatter: Sendable {
         }
         var lines: [String] = []
 
-        func shown(_ e: IndexedSnapshot.Entry) -> Bool {
-            showAll || !(e.node.has("internal") && e.childRefs.isEmpty == false ? true : e.node.has("internal"))
-        }
-
         /// The children to print under a node: hidden private views are replaced by their children.
         func visibleChildren(of ref: Int) -> [Int] {
             var result: [Int] = []
@@ -72,7 +68,8 @@ public struct TreeFormatter: Sendable {
             }
             let last = chain[chain.count - 1]
             let indent = String(repeating: "  ", count: depth)
-            if !showAll, last.system, !(last.parent.map { s[$0].system } ?? false) {
+            let first = chain[0]
+            if !showAll, first.system, !(first.parent.map { s[$0].system } ?? false) {
                 let count = s.descendants(of: last.ref).count
                 lines.append(indent + chain.map(label).joined(separator: " > ") + " " + Describe.frame(last.frame) + " {system chrome, \(count) nodes folded; --all shows them}")
                 return

@@ -26,6 +26,10 @@ public struct InspectReport: Codable, Sendable {
                           nodes: s.entries.count)
         self.issues = issues
         notes = s.snapshot.notes
+        let systemBreaks = s.snapshot.constraintBreaks.filter { $0.system == true }.count
+        if systemBreaks > 0 {
+            notes.append("\(systemBreaks) constraint conflict(s) inside UIKit's own views (alerts, keyboard) were ignored: not the app's to fix.")
+        }
         var hints: [String: String] = [:]
         for issue in issues { hints[issue.rule.rawValue] = issue.rule.hint }
         self.hints = hints

@@ -51,7 +51,9 @@ public struct IndexedSnapshot: Sendable {
             node.ref = ref
             let isHidden = hidden || node.has("hidden") || (node.alpha ?? 1) < 0.01
             let isSystem = system || node.has("system")
-            let isInternal = internalFlag || node.has("internal")
+            // A private UIKit view hides its UIKit insides, not the SwiftUI content it hosts
+            // (SwiftUI lists live in private collection view cells).
+            let isInternal = node.has("internal") || (internalFlag && node.source == .uikit)
             var entry = Entry(ref: ref, node: node, parent: parent, ancestors: ancestors, depth: ancestors.count,
                               childRefs: [], clipRect: clip, clipper: clipper, scrollAncestor: scroll, hidden: isHidden,
                               system: isSystem, internal: isInternal, controlAncestor: control)

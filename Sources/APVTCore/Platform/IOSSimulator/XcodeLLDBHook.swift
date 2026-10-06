@@ -20,7 +20,7 @@ enum XcodeLLDBHook {
         let expression = "(void)setenv(\\\"APVT_LOADED_BY\\\", \\\"xcode\\\", 1); (void*)dlopen(\\\"\(agentPath)\\\", 2)"
         return """
         \(begin)
-        breakpoint set --name UIApplicationMain --auto-continue true --breakpoint-name apvt-agent --command "expression -l objective-c -- \(expression)"
+        breakpoint set --name UIApplicationMain --auto-continue true --breakpoint-name apvt_agent --command "expression -l objective-c -- \(expression)"
         \(end)
         """
     }

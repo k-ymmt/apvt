@@ -108,6 +108,11 @@ public struct Node: Codable, Sendable {
     public var traits: [String]?
     public var alpha: Double?
     public var scroll: ScrollInfo?
+    /// SwiftUI only: the coordinate space `frame` was recorded in, when it is a ScrollView's
+    /// content (nil = the hosting view). The agent resolves it; snapshots carry screen points.
+    public var space: Int?
+    /// SwiftUI only: the coordinate space of this ScrollView's content.
+    public var contentSpace: Int?
     public var children: [Node]
 
     public init(source: NodeSource, type: String, detail: String? = nil, role: Role, frame: Rect,
@@ -191,10 +196,13 @@ public struct ConstraintBreak: Codable, Sendable {
     public var conflicting: [String]
     /// The views involved: class and identifier, e.g. `UIButton#uikit-manage`.
     public var views: [String]
+    /// Every view involved belongs to UIKit itself (an alert's insides, the keyboard).
+    public var system: Bool?
 
-    public init(broken: String, conflicting: [String], views: [String]) {
+    public init(broken: String, conflicting: [String], views: [String], system: Bool? = nil) {
         self.broken = broken
         self.conflicting = conflicting
         self.views = views
+        self.system = system
     }
 }

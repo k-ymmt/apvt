@@ -17,14 +17,18 @@ public enum SwiftUIDebugParser {
     }
 
     /// Nodes in the hosting view's coordinate space.
-    public static func parse(_ data: Data) throws -> [Node] {
+    /// `localize` turns a `LocalizedStringKey` into what the app shows (the agent asks the
+    /// app's bundles); without it, keys are shown as they are.
+    public static func parse(_ data: Data, localize: ((String) -> String?)? = nil) throws -> [Node] {
         let json = try JSONSerialization.jsonObject(with: data)
         guard let roots = json as? [[String: Any]] else {
             throw ParseError(description: "view debug data is not an array of nodes")
         }
+        var state = State()
+        state.localize = localize
         var nodes: [Node] = []
         for root in roots {
-            nodes += convert(root, font: nil)
+            nodes += convert(root, font: nil, space: nil, state: &state)
         }
         return nodes
     }
@@ -78,7 +82,13 @@ public enum SwiftUIDebugParser {
 
     // MARK: - Conversion
 
-    private static func convert(_ raw: [String: Any], font: FontHint?) -> [Node] {
+    /// Numbering of ScrollView content coordinate spaces.
+    struct State {
+        var nextSpace = 1
+        var localize: ((String) -> String?)?
+    }
+
+    private static func convert(_ raw: [String: Any], font: FontHint?, space: Int?, state: inout State) -> [Node] {
         let readable = attribute(raw, 0)?["readableType"] as? String ?? "?"
         let value = attribute(raw, 1)
         var font = font
@@ -86,7 +96,9 @@ public enum SwiftUIDebugParser {
             font = FontHint(value) ?? font
         }
         guard let position = pair(attribute(raw, 3)), let size = pair(attribute(raw, 4)) else {
-            return children(raw).flatMap { convert($0, font: font) }
+            var result: [Node] = []
+            for child in children(raw) { result += convert(child, font: font, space: space, state: &state) }
+            return result
         }
 
         let frame = Rect(x: position.0, y: position.1, width: size.0, height: size.1)
@@ -97,12 +109,22 @@ public enum SwiftUIDebugParser {
         // button's background shape): it still belongs to this node.
         var looseText: TextInfo?
         var looseShape: String?
+        // Below a SystemScrollView, frames are in the scroll content's coordinates.
+        var childSpace = space
+        var contentSpace: Int?
+        var contentSize: (Double, Double)?
         // Walk the frameless chain under this node: its modifiers, then the next framed nodes.
         func descend(_ list: [[String: Any]]) {
             for child in list {
-                if pair(attribute(child, 3)) != nil, pair(attribute(child, 4)) != nil {
-                    kids += convert(child, font: childFont)
+                if pair(attribute(child, 3)) != nil, let childSize = pair(attribute(child, 4)) {
+                    if contentSpace != nil, contentSize == nil { contentSize = childSize }
+                    kids += convert(child, font: childFont, space: childSpace, state: &state)
                 } else {
+                    if splitGeneric(attribute(child, 0)?["readableType"] as? String ?? "").base == "SystemScrollView", contentSpace == nil {
+                        contentSpace = state.nextSpace
+                        state.nextSpace += 1
+                        childSpace = contentSpace
+                    }
                     let name = attribute(child, 0)?["readableType"] as? String ?? ""
                     if name.hasPrefix("_EnvironmentKeyWritingModifier<Optional<Font>>"),
                        let v = attribute(child, 1), let f = FontHint(v) {
@@ -118,7 +140,7 @@ public enum SwiftUIDebugParser {
                     }
                     let (base, args) = splitGeneric(name)
                     if base == "Text", looseText == nil, let v = attribute(child, 1) {
-                        var info = TextInfo(string: textString(v))
+                        var info = TextInfo(string: textString(v, localize: state.localize))
                         let hint = FontHint(v) ?? childFont
                         info.textStyle = hint?.style
                         info.fontSize = hint?.size
@@ -133,7 +155,16 @@ public enum SwiftUIDebugParser {
         }
         descend(children(raw))
 
-        var node = makeNode(readable: readable, value: value, frame: frame, font: font)
+        var node = makeNode(readable: readable, value: value, frame: frame, font: font, localize: state.localize)
+        node.space = space
+        if let contentSpace {
+            node.type = "ScrollView"
+            node.role = .scroll
+            node.traits?.removeAll { $0 == "wrapper" }
+            node.contentSpace = contentSpace
+            node.scroll = ScrollInfo(contentWidth: contentSize?.0 ?? 0, contentHeight: contentSize?.1 ?? 0,
+                                     offsetX: 0, offsetY: 0, enabled: true)
+        }
         var seen = Set<String>()
         let modifiers = modifierNames.filter { seen.insert($0).inserted }
         if !modifiers.isEmpty { node.modifiers = modifiers }
@@ -170,7 +201,7 @@ public enum SwiftUIDebugParser {
 
         // A wrapper (AccessibilityAttachmentModifier, ModifiedContent, …) that holds exactly one
         // node with the same frame says nothing on its own: fold it into that node.
-        if node.has("wrapper"), node.role != .control, kids.count == 1, sameFrame(kids[0].frame, frame) {
+        if node.has("wrapper"), node.role != .control, node.contentSpace == nil, kids.count == 1, sameFrame(kids[0].frame, frame) {
             var only = kids[0]
             if let mods = node.modifiers {
                 var merged = mods
@@ -217,7 +248,8 @@ public enum SwiftUIDebugParser {
         "_OverlayModifier": ".overlay", "_PositionLayout": ".position", "_SafeAreaInsetsModifier": ".safeArea",
     ]
 
-    private static func makeNode(readable: String, value: [String: Any]?, frame: Rect, font: FontHint?) -> Node {
+    private static func makeNode(readable: String, value: [String: Any]?, frame: Rect, font: FontHint?,
+                                 localize: ((String) -> String?)?) -> Node {
         let (base, args) = splitGeneric(readable)
         func node(_ type: String, _ role: Role, traits: [String]? = nil) -> Node {
             Node(source: .swiftui, type: type, detail: readable == type ? nil : readable, role: role, frame: frame, traits: traits)
@@ -225,7 +257,7 @@ public enum SwiftUIDebugParser {
         switch base {
         case "Text":
             var n = node("Text", .text)
-            var info = TextInfo(string: value.map(textString) ?? "")
+            var info = TextInfo(string: value.map { textString($0, localize: localize) } ?? "")
             let hint = value.flatMap(FontHint.init) ?? font
             info.textStyle = hint?.style
             info.fontSize = hint?.size
@@ -302,18 +334,64 @@ public enum SwiftUIDebugParser {
     // MARK: - Values
 
     /// The string a `Text` shows: its `verbatim` / localized `key` values, joined.
-    static func textString(_ value: [String: Any]) -> String {
+    static func textString(_ value: [String: Any], localize: ((String) -> String?)? = nil) -> String {
         var parts: [String] = []
         func walk(_ attr: [String: Any]) {
+            let subs = attr["subattributes"] as? [[String: Any]] ?? []
+            // A LocalizedStringKey: its key, with interpolated arguments put back in.
+            if attr["readableType"] as? String == "LocalizedStringKey",
+               let key = subs.first(where: { $0["name"] as? String == "key" })?["value"] as? String {
+                let args = subs.first(where: { $0["name"] as? String == "arguments" })?["subattributes"] as? [[String: Any]] ?? []
+                parts.append(format(localize?(key) ?? key, arguments: args.map(argumentValue)))
+                return
+            }
             if let name = attr["name"] as? String, name == "key" || name == "verbatim" || name == "string",
                let s = attr["value"] as? String {
                 parts.append(s)
                 return
             }
-            for sub in attr["subattributes"] as? [[String: Any]] ?? [] { walk(sub) }
+            for sub in subs { walk(sub) }
         }
         walk(value)
         return parts.joined()
+    }
+
+    /// `value(25, nil)` → `25`; `value("Ann", nil)` → `Ann`.
+    private static func argumentValue(_ argument: [String: Any]) -> String {
+        var found: String?
+        func walk(_ attr: [String: Any]) {
+            if found == nil, let v = attr["value"] as? String, v.hasPrefix("value(") {
+                var inner = v.dropFirst("value(".count)
+                if let comma = inner.lastIndex(of: ",") { inner = inner[..<comma] } else if inner.hasSuffix(")") { inner = inner.dropLast() }
+                var text = String(inner).trimmingCharacters(in: .whitespaces)
+                if text.count >= 2, text.hasPrefix("\""), text.hasSuffix("\"") { text = String(text.dropFirst().dropLast()) }
+                found = text
+            }
+            for sub in attr["subattributes"] as? [[String: Any]] ?? [] { walk(sub) }
+        }
+        walk(argument)
+        return found ?? "…"
+    }
+
+    /// Replaces printf-style specifiers (%lld, %@, %.2f, %1$@ …) in order.
+    static func format(_ key: String, arguments: [String]) -> String {
+        guard !arguments.isEmpty else { return key }
+        let pattern = #"%%|%(?:(\d+)\$)?[-+ #0]*\d*(?:\.\d+)?(?:hh|h|ll|l|q|z|t|j|L)?[@dDiuUxXoOfeEgGcCsSpaA]"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return key }
+        let ns = key as NSString
+        var result = ""
+        var last = 0
+        var next = 0
+        for match in regex.matches(in: key, range: NSRange(location: 0, length: ns.length)) {
+            result += ns.substring(with: NSRange(location: last, length: match.range.location - last))
+            last = match.range.location + match.range.length
+            if ns.substring(with: match.range) == "%%" { result += "%"; continue }
+            var index = next
+            if match.range(at: 1).location != NSNotFound, let n = Int(ns.substring(with: match.range(at: 1))) { index = n - 1 } else { next += 1 }
+            result += index < arguments.count ? arguments[index] : ns.substring(with: match.range)
+        }
+        result += ns.substring(from: last)
+        return result
     }
 
     /// `width: 150, height: 140` from a layout modifier's value.

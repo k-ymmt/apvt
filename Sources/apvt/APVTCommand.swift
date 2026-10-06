@@ -16,22 +16,25 @@ struct APVT: ParsableCommand {
         a small agent library is loaded into it at launch.
 
         WORKFLOW
-          1. apvt setup                once per simulator boot (add --xcode if you Run from Xcode)
-          2. launch or relaunch the app  (xcrun simctl launch, Xcode Run, Xcode MCP, home screen)
-          3. navigate to the screen      (taps etc. through your usual tools)
-          4. apvt inspect                issues on the current screen, each with a node number @N
-          5. apvt query @N               a node in context: ancestors, text metrics, issues
-             apvt tree                   the whole view tree with frames
-             apvt assert <sel> --inside screen --not-truncated   check what you intended
-             apvt screenshot shot.png    a screenshot with issues outlined and labelled @N
-          6. fix the code, rebuild, relaunch, and run apvt inspect again
+          1. apvt setup            once per simulator boot
+                                   (add --xcode if you Run from Xcode)
+          2. launch the app        simctl, Xcode Run, Xcode MCP, home screen
+          3. go to the screen      with your usual tools (taps, deep links)
+          4. apvt inspect          issues on the current screen, with @N
+          5. apvt query @N         one node: ancestors, text metrics, issues
+             apvt tree             the view tree with frames
+             apvt assert <sel> …   check what you meant (--inside screen, …)
+             apvt screenshot f.png issues outlined and labelled @N
+          6. fix, rebuild, relaunch, apvt inspect again
 
         SELECTORS (query, assert, tree --root)
-          @12  #identifier  text:Sub  text="Exact text"  type:Button  role:control  type:Text,text:Inbox
+          @12   #identifier   text:Sub   text="Exact text"   type:Button
+          role:control   type:Text,text:Inbox (terms joined by commas)
 
-        Coordinates are points, origin top-left of the screen: (x,y widthxheight).
-        Exit codes: 0 ok · 1 a check failed (assert, inspect --fail-on) · 2 usage · 3 environment/app.
-        Every command takes --json. `apvt rules` lists what inspect checks and how to fix each.
+        Frames are points, origin top-left of the screen: (x,y widthxheight).
+        Exit codes: 0 ok, 1 a check failed (assert, inspect --fail-on),
+        2 usage, 3 environment or app. Every command takes --json.
+        `apvt rules` lists what inspect checks and how to fix each.
         """,
         version: "0.1.0",
         subcommands: [Setup.self, Teardown.self, Status.self, Inspect.self, Tree.self, Query.self, Assert.self,
@@ -359,7 +362,8 @@ struct Assert: ParsableCommand {
         EXAMPLES
           apvt assert '#follow' --visible --inside screen --min-width 44
           apvt assert 'type:Text,text:Inbox' --not-truncated --no-overlap
-          apvt assert '#plan-free' --same-width '#plan-pro' --align-top '#plan-pro' --left-of '#plan-pro' --spacing 12
+          apvt assert '#plan-free' --same-width '#plan-pro' \\
+            --align-top '#plan-pro' --left-of '#plan-pro' --spacing 12
           apvt assert 'type:Button' --count 3
         """
     )

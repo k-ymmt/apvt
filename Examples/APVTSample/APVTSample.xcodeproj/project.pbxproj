@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		026FDA28531BB248F466DB41 /* CleanScreens.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A73399E1B309E13AE95C12E /* CleanScreens.swift */; };
 		1AB69A893B9322CA629F078B /* SwiftUIScreens.swift in Sources */ = {isa = PBXBuildFile; fileRef = E15B23C8A7A0781E97B81528 /* SwiftUIScreens.swift */; };
 		5AB9F3833F88379C10EB4A81 /* APVTSampleApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 970C7727A095CDAEAB28077B /* APVTSampleApp.swift */; };
 		C66C865C66FDC2DBD4F41855 /* UIKitScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27758B292D1CBC3F28ED8AB9 /* UIKitScreen.swift */; };
@@ -15,6 +16,7 @@
 /* Begin PBXFileReference section */
 		0A22F667F8C550841FE18ECB /* APVTSample.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = APVTSample.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		27758B292D1CBC3F28ED8AB9 /* UIKitScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UIKitScreen.swift; sourceTree = "<group>"; };
+		3A73399E1B309E13AE95C12E /* CleanScreens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CleanScreens.swift; sourceTree = "<group>"; };
 		970C7727A095CDAEAB28077B /* APVTSampleApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APVTSampleApp.swift; sourceTree = "<group>"; };
 		E15B23C8A7A0781E97B81528 /* SwiftUIScreens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwiftUIScreens.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -24,6 +26,7 @@
 			isa = PBXGroup;
 			children = (
 				970C7727A095CDAEAB28077B /* APVTSampleApp.swift */,
+				3A73399E1B309E13AE95C12E /* CleanScreens.swift */,
 				E15B23C8A7A0781E97B81528 /* SwiftUIScreens.swift */,
 				27758B292D1CBC3F28ED8AB9 /* UIKitScreen.swift */,
 			);
@@ -102,6 +105,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				5AB9F3833F88379C10EB4A81 /* APVTSampleApp.swift in Sources */,
+				026FDA28531BB248F466DB41 /* CleanScreens.swift in Sources */,
 				1AB69A893B9322CA629F078B /* SwiftUIScreens.swift in Sources */,
 				C66C865C66FDC2DBD4F41855 /* UIKitScreen.swift in Sources */,
 			);

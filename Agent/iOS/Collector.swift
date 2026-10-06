@@ -96,7 +96,8 @@ struct Collector {
         let swiftName = String(describing: type(of: view))
         let shortName = SwiftUIDebugParser.splitGeneric(swiftName).base
         let hosting = isHostingView(view)
-        var system = system || Self.systemContainers.contains(where: { className.hasPrefix($0) })
+        var system = system || view is UINavigationBar || view is UITabBar || view is UIToolbar
+            || Self.systemContainers.contains(where: { className.hasPrefix($0) })
         if hosting && isUIKitModuleClass(className) { system = true }
 
         var node = Node(source: .uikit, type: shortName, detail: className == shortName ? nil : className,
@@ -127,8 +128,12 @@ struct Collector {
             children += swiftUINodes(in: view, system: system)
         }
         if depth < 200 {
+            // A control draws itself with private subviews (a UISwitch holds a 630pt image view):
+            // only buttons and text fields have insides worth reading.
+            let opaqueControl = view is UIControl && !(view is UIButton) && !(view is UITextField)
             for sub in view.subviews {
                 var child = collect(sub, system: system, depth: depth + 1)
+                if opaqueControl { child = markInternal(child) }
                 if hosting, isSwiftUIModuleClass(NSStringFromClass(type(of: sub))), !isPlatformViewHost(NSStringFromClass(type(of: sub))) {
                     child.addTrait("internal")
                 }
@@ -136,6 +141,13 @@ struct Collector {
             }
         }
         node.children = children
+        return node
+    }
+
+    private func markInternal(_ node: Node) -> Node {
+        var node = node
+        node.addTrait("internal")
+        node.children = node.children.map(markInternal)
         return node
     }
 
@@ -213,7 +225,7 @@ struct Collector {
         guard let data = debugData(of: view) else { return [] }
         var nodes: [Node]
         do {
-            nodes = try SwiftUIDebugParser.parse(data)
+            nodes = try SwiftUIDebugParser.parse(data, localize: Localizer.localize)
         } catch {
             notes.append("SwiftUI debug data of \(NSStringFromClass(type(of: view))) did not parse: \(error)")
             return []
@@ -222,10 +234,37 @@ struct Collector {
             if !system { emptyHostingViews += 1 }
             return []
         }
-        let axElements = accessibilityElements(of: view)
-        nodes = nodes.map { finish($0, in: view, system: system) }
+        // Coordinate spaces: a ScrollView's content was recorded in its own; the UIScrollView
+        // SwiftUI built for it (same content size) converts that to the screen.
+        var scrollViews: [UIScrollView] = []
+        func gather(_ v: UIView) {
+            for sub in v.subviews {
+                if let sv = sub as? UIScrollView, !(sub is UITextView) { scrollViews.append(sv) }
+                gather(sub)
+            }
+        }
+        gather(view)
+        var spaces: [Int: UIScrollView] = [:]
+        func matchSpaces(_ list: [Node]) {
+            for node in list {
+                if let k = node.contentSpace, let content = node.scroll {
+                    if let index = scrollViews.firstIndex(where: {
+                        abs($0.contentSize.width - content.contentWidth) < 1.5 && abs($0.contentSize.height - content.contentHeight) < 1.5
+                    }) {
+                        spaces[k] = scrollViews.remove(at: index)
+                    } else {
+                        notes.append("could not find the UIScrollView of a SwiftUI ScrollView (content \(Int(content.contentWidth))x\(Int(content.contentHeight))); its content frames may be off")
+                    }
+                }
+                matchSpaces(node.children)
+            }
+        }
+        matchSpaces(nodes)
+        nodes = nodes.map { place($0, in: view, spaces: spaces, system: system) }
+
         // An identifier set on a container reaches every element inside it (SwiftUI propagates
         // it): such a group names the nodes' lowest common ancestor, not each of them.
+        let axElements = accessibilityElements(of: view)
         var groups: [String: [AXElement]] = [:]
         for element in axElements {
             if let id = element.identifier { groups[id, default: []].append(element) }
@@ -242,22 +281,43 @@ struct Collector {
             guard !common.isEmpty else { continue }
             apply(AXElement(frame: .zero, identifier: id, label: nil, isButton: false), at: common, to: &nodes)
         }
-        return nodes
+        return nodes.map(measure)
     }
 
-    /// Hosting-view coordinates to screen points, fonts measured, system subtrees marked.
-    private func finish(_ node: Node, in view: UIView, system: Bool) -> Node {
+    /// Recorded coordinates to screen points; system subtrees marked.
+    private func place(_ node: Node, in view: UIView, spaces: [Int: UIScrollView], system: Bool) -> Node {
         var node = node
-        let f = node.frame
-        node.frame = rect(view.convert(CGRect(x: f.x, y: f.y, width: f.width, height: f.height), to: space))
+        let f = CGRect(x: node.frame.x, y: node.frame.y, width: node.frame.width, height: node.frame.height)
+        if let k = node.space, let scrollView = spaces[k] {
+            node.frame = rect(scrollView.convert(f, to: space))
+        } else {
+            node.frame = rect(view.convert(f, to: space))
+        }
+        node.space = nil
+        if let k = node.contentSpace, let scrollView = spaces[k] {
+            node.scroll = ScrollInfo(contentWidth: scrollView.contentSize.width, contentHeight: scrollView.contentSize.height,
+                                     offsetX: scrollView.contentOffset.x, offsetY: scrollView.contentOffset.y,
+                                     enabled: scrollView.isScrollEnabled)
+        }
+        node.contentSpace = nil
         if system { node.addTrait("system") }
+        node.children = node.children.map { place($0, in: view, spaces: spaces, system: system) }
+        return node
+    }
+
+    /// Text metrics, with the font the debug data names (or one guessed from the frame).
+    private func measure(_ node: Node) -> Node {
+        var node = node
         if var info = node.text, node.type == "Text" || node.has("textNotLaidOut") {
-            let (font, guessed) = TextMeasure.swiftUIFont(for: info, frameHeight: node.frame.height)
+            // Text that was not laid out says nothing about its font through the frame: body.
+            let (font, guessed) = node.has("textNotLaidOut") && info.textStyle == nil && info.fontSize == nil
+                ? (UIFont.preferredFont(forTextStyle: .body), true)
+                : TextMeasure.swiftUIFont(for: info, frame: node.frame)
             TextMeasure.fill(&info, font: font, width: node.frame.width)
             if guessed { info.fontGuessed = true }
             node.text = info
         }
-        node.children = node.children.map { finish($0, in: view, system: system) }
+        node.children = node.children.map(measure)
         return node
     }
 
@@ -326,6 +386,11 @@ struct Collector {
             guard let first = path.first else { return }
             if path.count == 1 {
                 if let id = element.identifier, list[first].identifier == nil { list[first].identifier = id }
+                // The debug data holds a Text's localization key; accessibility holds what is shown.
+                if list[first].type == "Text", let label = element.label, !label.isEmpty, element.frame != .zero {
+                    list[first].text?.string = label
+                    return
+                }
                 if let label = element.label, label != list[first].text?.string, list[first].label == nil,
                    list[first].role == .control || element.identifier != nil {
                     list[first].label = label
@@ -335,5 +400,38 @@ struct Collector {
             }
         }
         update(&nodes, path[...])
+    }
+}
+
+/// What a `LocalizedStringKey` shows in the app's current language. SwiftUI looks keys up in
+/// `Localizable` of the main bundle unless a view names another bundle — which the debug data
+/// does not say, so the other loaded bundles (Swift packages' resources) are tried next.
+@MainActor
+enum Localizer {
+    private static var cache: [String: String?] = [:]
+    private static let missing = "\u{1}apvt-missing\u{1}"
+
+    static func localize(_ key: String) -> String? {
+        MainActor.assumeIsolated {
+            if let hit = cache[key] { return hit }
+            var result: String?
+            for bundle in [Bundle.main] + Bundle.allBundles + resourceBundles() {
+                let value = bundle.localizedString(forKey: key, value: missing, table: nil)
+                if value != missing { result = value; break }
+            }
+            cache[key] = result
+            return result
+        }
+    }
+
+    private static var resources: [Bundle]?
+
+    /// `*.bundle` resource bundles inside the app (SwiftPM `Bundle.module`s), loaded lazily by the app.
+    private static func resourceBundles() -> [Bundle] {
+        if let resources { return resources }
+        let urls = (try? FileManager.default.contentsOfDirectory(at: Bundle.main.bundleURL, includingPropertiesForKeys: nil)) ?? []
+        let found = urls.filter { $0.pathExtension == "bundle" }.compactMap(Bundle.init(url:))
+        resources = found
+        return found
     }
 }

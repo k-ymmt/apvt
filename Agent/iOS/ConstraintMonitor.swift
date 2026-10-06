@@ -36,16 +36,39 @@ enum ConstraintMonitor {
     private static func record(_ broken: NSLayoutConstraint, _ all: NSArray) {
         let list = all.compactMap { $0 as? NSLayoutConstraint }
         var views: [String] = []
+        var allSystem = true
         for c in list + [broken] {
             for item in [c.firstItem, c.secondItem] {
+                guard let item else { continue }
+                let view = (item as? UIView) ?? (item as? UILayoutGuide)?.owningView
+                if let view, !isSystem(view) { allSystem = false }
                 guard let d = describe(item), !views.contains(d) else { continue }
                 views.append(d)
             }
         }
-        let entry = ConstraintBreak(broken: broken.description, conflicting: list.map(\.description), views: views)
+        let entry = ConstraintBreak(broken: broken.description, conflicting: list.map(\.description), views: views, system: allSystem)
         lock.lock()
         if breaks.count < limit { breaks.append(entry) }
         lock.unlock()
+    }
+
+    private static let systemPrefixes = ["_UIAlertController", "UIAlertController", "_UIInterfaceAction", "UIInterfaceAction",
+                                         "TUI", "UIKB", "_UIKB", "UIInputSet", "_UIRemoteKeyboard", "UIKeyboard", "_UISystemBackground"]
+
+    /// UIKit's own view: an alert's or the keyboard's insides, at any depth.
+    @MainActor
+    private static func isSystem(_ view: UIView) -> Bool {
+        if let window = view.window {
+            let name = NSStringFromClass(type(of: window))
+            if name.contains("Keyboard") || name.contains("TextEffects") { return true }
+        }
+        var current: UIView? = view
+        while let v = current {
+            let name = NSStringFromClass(type(of: v))
+            if systemPrefixes.contains(where: name.hasPrefix) { return true }
+            current = v.superview
+        }
+        return false
     }
 
     @MainActor
