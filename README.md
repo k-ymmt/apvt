@@ -95,7 +95,7 @@ that fixes it.
 | `clipped` | content hidden by an ancestor that clips (`clipsToBounds`, `.clipped()`) |
 | `truncated` | text that needs more room than its frame (measured with its font) |
 | `squeezed` | text narrower than its longest word, controls collapsed to zero |
-| `overlap` | texts / controls drawn on top of each other |
+| `overlap` | texts / controls drawn on top of each other; an error when a text crosses a control's edge, a warning when it sits wholly inside one (a badge may be meant) |
 | `unsafe-area` | text / controls under the status bar, Dynamic Island or home indicator |
 | `small-target` | controls smaller than 24x24pt |
 | `ambiguous-layout` | UIKit views whose Auto Layout frame is ambiguous |

@@ -52,6 +52,12 @@ public struct Analyzer: Sendable {
         }
     }
 
+    /// `text` overlaps `control` and sticks out of it: the text straddles the control's border.
+    func crossesControlEdge(_ text: IndexedSnapshot.Entry, _ textFrame: Rect, _ control: IndexedSnapshot.Entry, _ controlFrame: Rect) -> Bool {
+        guard text.node.role == .text || (text.node.text != nil && text.node.role != .control), control.node.role == .control else { return false }
+        return !controlFrame.contains(textFrame, tolerance: 0.5)
+    }
+
     func isTextOrControl(_ e: IndexedSnapshot.Entry) -> Bool {
         e.node.role == .text || e.node.role == .control || e.node.text != nil
     }
@@ -230,8 +236,11 @@ public struct Analyzer: Sendable {
                 if a.node.source != b.node.source, sameFrame(a.frame, b.frame) { continue }
                 // A text owner and the text it owns describe the same thing.
                 if a.node.has("textNotLaidOut") || b.node.has("textNotLaidOut") { continue }
-                issues.append(Issue(rule: .overlap, severity: .warning, ref: a.ref, related: [b.ref],
-                                    message: "\(Describe.node(a)) \(Describe.frame(a.frame)) overlaps \(Describe.node(b)) \(Describe.frame(b.frame)) by \(Describe.number(shared.width))x\(Describe.number(shared.height))pt",
+                // Text drawn across a control's edge is a mistake; text placed wholly inside a
+                // control (a badge, a caption on a big button) may be intended.
+                let crossesEdge = crossesControlEdge(a, va, b, vb) || crossesControlEdge(b, vb, a, va)
+                issues.append(Issue(rule: .overlap, severity: crossesEdge ? .error : .warning, ref: a.ref, related: [b.ref],
+                                    message: "\(Describe.node(a)) \(Describe.frame(a.frame)) overlaps \(Describe.node(b)) \(Describe.frame(b.frame)) by \(Describe.number(shared.width))x\(Describe.number(shared.height))pt\(crossesEdge ? " across the control's edge" : "")",
                                     frame: shared))
             }
         }
