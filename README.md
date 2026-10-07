@@ -59,7 +59,25 @@ apvt tree                  # the view tree with frames
 apvt assert '#follow' --visible --inside screen --min-width 44
 apvt screenshot shot.png   # issues outlined and labelled @N
 apvt rules                 # what inspect checks and how to fix each
+apvt type "Buy eggs" --submit   # type into the focused text field (tap it first)
+apvt launch-env            # env vars that make an Xcode-launched app load the agent
 ```
+
+### Apps launched by Xcode (Run, Xcode MCP)
+
+Xcode replaces launchd's `DYLD_INSERT_LIBRARIES`, so an app it launches has no agent. Give that
+launch the variables `apvt launch-env` prints instead — for example as the `environmentVariables`
+of Xcode MCP's `DeviceInteractionInstallAndRun` (`apvt launch-env --xcode` adds
+`"$(inherited)": ""` to keep the scheme's own), or in the scheme's Run > Environment Variables. The app then runs under Xcode, with its
+console and `GetConsoleOutput`, and answers apvt.
+
+### Typing
+
+`apvt type <text>` inserts text into whatever has keyboard focus, through `UIKeyInput` as the
+keyboard does, so SwiftUI bindings, delegates and `.onChange` observe it. `--replace` clears the
+field first; `--submit` presses Return (`textFieldShouldReturn`, `.onSubmit`). Tools that drive
+the simulator by taps (Xcode MCP's `DeviceInteractionSynthesize`) can then tap the field and let
+apvt type, instead of tapping keys one by one.
 
 Every command takes `--json`, `--device <name|udid>`, `--app <bundle-id>` and `--wait <seconds>`
 (wait for a just-launched app); `inspect` and `tree` take `--save file.json`, and any command can
@@ -77,7 +95,7 @@ that fixes it.
 | `clipped` | content hidden by an ancestor that clips (`clipsToBounds`, `.clipped()`) |
 | `truncated` | text that needs more room than its frame (measured with its font) |
 | `squeezed` | text narrower than its longest word, controls collapsed to zero |
-| `overlap` | texts / controls drawn on top of each other |
+| `overlap` | texts / controls drawn on top of each other; an error when a text crosses a control's edge, a warning when it sits wholly inside one (a badge may be meant) |
 | `unsafe-area` | text / controls under the status bar, Dynamic Island or home indicator |
 | `small-target` | controls smaller than 24x24pt |
 | `ambiguous-layout` | UIKit views whose Auto Layout frame is ambiguous |
@@ -92,7 +110,8 @@ Contrast is not checked.
   `xcrun simctl launch` or from the home screen get it. **Xcode's Run does not**: it passes its
   own `DYLD_INSERT_LIBRARIES` (Main Thread Checker), which replaces launchd's, and loading the agent
   through Xcode's debugger did not work (see the docs). Build/run with Xcode, then relaunch with
-  `xcrun simctl launch <udid> <bundle-id>`.
+  `xcrun simctl launch <udid> <bundle-id>` — or pass `apvt launch-env`'s variables to Xcode's
+  launch, which puts the agent itself into `DYLD_INSERT_LIBRARIES`.
 - **SwiftUI.** The agent sets `SWIFTUI_VIEW_DEBUG` before SwiftUI builds its first view graph and
   reads each hosting view's `makeViewDebugData()`: SwiftUI's own layout (types, frames,
   modifiers, texts). ScrollView content is mapped through the UIScrollView SwiftUI made for it.

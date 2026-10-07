@@ -17,10 +17,11 @@ struct APVT: ParsableCommand {
 
         WORKFLOW
           1. apvt setup            once per simulator boot
-          2. launch the app        xcrun simctl launch, or the home screen
-                                   (not Xcode's Run: its debugger setup drops
-                                   the agent; relaunch with simctl after it)
-          3. go to the screen      with your usual tools (taps, deep links)
+          2. launch the app        xcrun simctl launch, or the home screen;
+                                   from Xcode or Xcode MCP, pass the variables
+                                   of `apvt launch-env` to the launch instead
+          3. go to the screen      with your usual tools (taps, deep links);
+                                   apvt type "text" fills the focused field
           4. apvt inspect          issues on the current screen, with @N
           5. apvt query @N         one node: ancestors, text metrics, issues
              apvt tree             the view tree with frames
@@ -39,8 +40,8 @@ struct APVT: ParsableCommand {
         `apvt rules` lists what inspect checks and how to fix each.
         """,
         version: "0.1.0",
-        subcommands: [Setup.self, Teardown.self, Status.self, Inspect.self, Tree.self, Query.self, Assert.self,
-                      Screenshot.self, Rules.self, Debug.self]
+        subcommands: [Setup.self, Teardown.self, Status.self, LaunchEnv.self, Inspect.self, Tree.self, Query.self, Assert.self,
+                      Screenshot.self, TypeText.self, Rules.self, Debug.self]
     )
 }
 
@@ -123,9 +124,11 @@ struct Setup: ParsableCommand {
         simctl or the home screen — loads it. Apps already running must be \
         relaunched. Lasts until the simulator shuts down.
 
-        Xcode's Run is not supported: it passes its own DYLD_INSERT_LIBRARIES (Main Thread \
-        Checker), which replaces apvt's. After building and running from Xcode, relaunch the \
-        app with `xcrun simctl launch <udid> <bundle-id>`.
+        Xcode's Run passes its own DYLD_INSERT_LIBRARIES (Main Thread Checker), which replaces \
+        launchd's, so an app Xcode starts has no agent. Either relaunch it with \
+        `xcrun simctl launch <udid> <bundle-id>`, or give the launch the variables of \
+        `apvt launch-env` (Xcode MCP DeviceInteractionInstallAndRun's environmentVariables, or \
+        the scheme's Run environment).
         """
     )
 
@@ -190,6 +193,81 @@ struct Status: ParsableCommand {
             }
             if status.oldLLDBHook { print("an old apvt hook is still in ~/.lldbinit or ~/.lldbinit-Xcode: apvt teardown (or apvt setup) removes it") }
             print("agent build: \(status.agentBuild ?? "not built yet")")
+            return 0
+        }
+    }
+}
+
+struct LaunchEnv: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "launch-env",
+        abstract: "Print the environment variables that make an app launched by Xcode load the agent.",
+        discussion: """
+        For launches apvt setup cannot reach: Xcode's Run and Xcode MCP's \
+        DeviceInteractionInstallAndRun pass their own DYLD_INSERT_LIBRARIES, which replaces \
+        the one apvt setup puts into launchd. Pass these variables to that launch instead, for \
+        example as DeviceInteractionInstallAndRun's environmentVariables (--xcode adds \
+        "$(inherited)": "" to keep the scheme's own), or in the scheme's Run > Environment Variables. The app then \
+        runs under Xcode, with its console, and answers apvt. Builds the agent if needed and \
+        turns on the simulator's application accessibility (as setup does); launchd is left \
+        alone.
+        """
+    )
+
+    @Option(help: "Simulator name or UDID. Default: the only booted simulator.")
+    var device: String?
+    @Flag(help: "Print KEY=value lines instead of JSON.")
+    var shell = false
+    @Flag(help: ArgumentHelp("Add \"$(inherited)\": \"\" so the JSON can be passed as-is to Xcode MCP's DeviceInteractionInstallAndRun environmentVariables, keeping the scheme's own variables."))
+    var xcode = false
+
+    func run() throws {
+        try apvt.run(json: !shell) {
+            var env = try Session.launchEnvironment(device: device)
+            if xcode { env["$(inherited)"] = "" }
+            if shell {
+                env.keys.sorted().forEach { print("\($0)=\(env[$0]!)") }
+            } else {
+                printJSON(env)
+            }
+            return 0
+        }
+    }
+}
+
+// MARK: - type
+
+struct TypeText: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "type",
+        abstract: "Type text into the text field that has keyboard focus in the app.",
+        discussion: """
+        Tap the field first (with the tool that drives the simulator), then: apvt type "hello". \
+        The agent inserts the text through UIKeyInput, as the keyboard does, so SwiftUI \
+        bindings, delegates and .onChange see it. --replace clears the field first; --submit \
+        presses Return afterwards (textFieldShouldReturn, SwiftUI .onSubmit). Prints the field \
+        and its value afterwards. Faster and more reliable than tapping keys one by one, and \
+        independent of the keyboard layout.
+        """
+    )
+
+    @Argument(help: "The text to type. Use \"\" with --submit to press Return only.")
+    var text: String
+    @Flag(help: "Replace the field's text instead of inserting at the cursor.")
+    var replace = false
+    @Flag(help: "Press Return after typing.")
+    var submit = false
+    @OptionGroup var target: TargetOptions
+    @OptionGroup var output: JSONFlag
+
+    func run() throws {
+        try apvt.run(json: output.json) {
+            let platform = try Session.platform(target.platform)
+            let (response, agent) = try Session.type(platform, target.target, text: text, replace: replace, submit: submit)
+            if output.json { printJSON(response); return 0 }
+            print("typed into \(response.focused ?? "?") of \(agent.title)")
+            print("value: \(response.value.map { "\"\($0)\"" } ?? "-")")
+            if submit { print("focus after Return: \(response.focusedAfter ?? "none (editing ended)")") }
             return 0
         }
     }

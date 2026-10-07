@@ -409,7 +409,24 @@ struct Collector {
             }
         }
         search(nodes, path: [])
-        return best?.path
+        if let best { return best.path }
+        // `.offset` moves what is drawn (and its accessibility frame) but not the layout frame
+        // SwiftUI reports, so the frames no longer overlap enough. Fall back to the nearest node
+        // of the same size that shows the same text.
+        guard let label = element.label, !label.isEmpty else { return nil }
+        var near: (path: [Int], distance: Double)?
+        func searchMoved(_ list: [Node], path: [Int]) {
+            for (index, node) in list.enumerated() {
+                if node.identifier == nil, node.text?.string == label || node.label == label,
+                   abs(node.frame.width - element.frame.width) < 1, abs(node.frame.height - element.frame.height) < 1 {
+                    let d = abs(node.frame.x - element.frame.x) + abs(node.frame.y - element.frame.y)
+                    if near == nil || d < near!.distance { near = (path + [index], d) }
+                }
+                searchMoved(node.children, path: path + [index])
+            }
+        }
+        searchMoved(nodes, path: [])
+        return near?.path
     }
 
     private func apply(_ element: AXElement, at path: [Int], to nodes: inout [Node]) {

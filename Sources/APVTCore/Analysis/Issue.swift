@@ -29,7 +29,7 @@ public enum Rule: String, Codable, Sendable, CaseIterable {
         case .clipped: "content is hidden by an ancestor that clips (clipsToBounds / .clipped())"
         case .truncated: "text needs more room than it has, so it is truncated (…) or cut"
         case .squeezed: "text or a control is narrower than its content: words break mid-word or vanish"
-        case .overlap: "two texts or controls are drawn on top of each other"
+        case .overlap: "two texts or controls are drawn on top of each other (an error when text crosses a control's edge)"
         case .unsafeArea: "text or a control sits under the status bar / Dynamic Island / home indicator"
         case .smallTarget: "a control is smaller than 24x24pt (WCAG 2.5.8), hard to tap"
         case .ambiguousLayout: "Auto Layout cannot decide the view's frame (UIKit hasAmbiguousLayout)"

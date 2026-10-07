@@ -1,5 +1,6 @@
 import APVTCore
 import APVTModel
+import Foundation
 import Testing
 
 /// Every defect Examples/APVTSample plants is found, and nothing else: the clean screens
@@ -103,5 +104,41 @@ struct NotIssuesTests {
         let column = try #require(try NodeSelector("#plan-free").select(in: s).first)
         #expect(column.node.type == ".background")
         #expect(column.frame.width == 150)
+    }
+}
+
+/// Text drawn across a control's border is an error; text wholly inside a control may be meant.
+@Suite("Overlap of text and controls")
+struct OverlapSeverityTests {
+    /// The form screen with one extra Text placed next to `#help`, at `frame`.
+    func formWithText(at frame: (Rect) -> Rect) throws -> (IndexedSnapshot, Rect) {
+        let data = try Data(contentsOf: Fixture.url("sample-form"))
+        var snapshot = try JSONDecoder().decode(Snapshot.self, from: data)
+        var helpFrame: Rect?
+        func insert(_ nodes: inout [Node]) -> Bool {
+            if let i = nodes.firstIndex(where: { $0.identifier == "help" && $0.role == .control }) {
+                helpFrame = nodes[i].frame
+                nodes.insert(Node(source: nodes[i].source, type: "Text", role: .text, frame: frame(nodes[i].frame),
+                                  text: TextInfo(string: "Enter a valid email address.")), at: i + 1)
+                return true
+            }
+            for j in nodes.indices where insert(&nodes[j].children) { return true }
+            return false
+        }
+        #expect(insert(&snapshot.windows))
+        return (IndexedSnapshot(snapshot), try #require(helpFrame))
+    }
+
+    @Test func textAcrossAControlsEdgeIsAnError() throws {
+        let (s, _) = try formWithText { b in Rect(x: b.x - 10, y: b.y + b.height / 2, width: 200, height: 20) }
+        let overlap = try #require(Analyzer().analyze(s).first { $0.rule == .overlap })
+        #expect(overlap.severity == .error)
+        #expect(overlap.message.contains("across the control's edge"))
+    }
+
+    @Test func textWhollyInsideAControlStaysAWarning() throws {
+        let (s, _) = try formWithText { b in Rect(x: b.x + 1, y: b.y + 1, width: max(1.5, b.width - 2), height: max(1.5, b.height - 2)) }
+        let overlap = try #require(Analyzer().analyze(s).first { $0.rule == .overlap })
+        #expect(overlap.severity == .warning)
     }
 }
