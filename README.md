@@ -22,6 +22,12 @@ next: apvt query @14   # the node, its ancestors and metrics · apvt tree · apv
 
 Requires macOS 15+, Xcode with the iOS Simulator platform, Swift 6.2+ (the agent uses `@section`).
 
+With Homebrew:
+
+```bash
+brew install k-ymmt/tap/apvt
+```
+
 From a release (a universal binary for Apple silicon and Intel):
 
 ```bash
