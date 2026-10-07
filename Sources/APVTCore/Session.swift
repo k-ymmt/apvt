@@ -7,11 +7,14 @@ public struct Target: Sendable {
     public var app: String?
     /// Read a saved snapshot instead of asking a running app.
     public var snapshotFile: String?
+    /// Seconds to wait for the app's agent to appear (right after launching it).
+    public var wait: Double
 
-    public init(device: String?, app: String?, snapshotFile: String?) {
+    public init(device: String?, app: String?, snapshotFile: String?, wait: Double = 0) {
         self.device = device
         self.app = app
         self.snapshotFile = snapshotFile
+        self.wait = wait
     }
 }
 
@@ -25,20 +28,45 @@ public enum Session {
         return platform
     }
 
-    /// The one app the command is about.
+    /// The one app the command is about: named by --app, or the only one whose agent answers.
+    /// With --wait, waits for it to appear and to have run for a moment (its first screen built).
     public static func agent(_ platform: any Platform, _ target: Target) throws -> RunningAgent {
-        let agents = try platform.agents(device: target.device)
-        if let app = target.app {
-            let matches = agents.filter { $0.bundleId == app || $0.name == app }
-            if let first = matches.first { return first }
-            throw try notRunning(platform, target, app: app)
-        }
-        switch agents.count {
-        case 1: return agents[0]
-        case 0: throw try notRunning(platform, target, app: nil)
-        default:
-            throw APVTError(.usage, "\(agents.count) apps with the agent are running; say which one",
-                            fix: agents.map { "--app \($0.bundleId)   # \($0.name), pid \($0.pid), \($0.deviceName ?? "")" })
+        let deadline = Date().addingTimeInterval(target.wait)
+        while true {
+            let agents = try platform.agents(device: target.device)
+            let candidates = target.app.map { app in agents.filter { $0.bundleId == app || $0.name == app } } ?? agents
+            // Ping together: each suspended app costs the whole timeout.
+            nonisolated(unsafe) var answers = [Bool](repeating: false, count: candidates.count)
+            DispatchQueue.concurrentPerform(iterations: candidates.count) { i in
+                let ok = platform.ping(candidates[i], timeout: 2)
+                answers[i] = ok
+            }
+            let answering = candidates.indices.filter { answers[$0] }.map { candidates[$0] }
+            switch answering.count {
+            case 1:
+                // A just-launched app is still building its first screen.
+                if target.wait > 0 {
+                    let remaining = 1.5 - Date().timeIntervalSince(answering[0].startedAt)
+                    if remaining > 0 { Thread.sleep(forTimeInterval: remaining) }
+                }
+                return answering[0]
+            case 0:
+                // Keep waiting for the app that is being launched; other apps may be suspended.
+                if Date() < deadline {
+                    Thread.sleep(forTimeInterval: 0.5)
+                    continue
+                }
+                if candidates.isEmpty { throw try notRunning(platform, target, app: target.app) }
+                let names = candidates.map(\.title).joined(separator: ", ")
+                throw APVTError(.agent, "\(names) did not answer within 2s",
+                                why: "an app in the background is suspended by iOS (only the foreground app answers), or it is paused at a breakpoint.",
+                                fix: candidates.map { "xcrun simctl launch \($0.deviceUDID ?? "booted") \($0.bundleId)   # brings it to the foreground" }
+                                    + ["resume the app in Xcode if it is stopped at a breakpoint",
+                                       "--wait 10   # if the app was just launched"])
+            default:
+                throw APVTError(.usage, "\(answering.count) apps with the agent are answering; say which one",
+                                fix: answering.map { "--app \($0.bundleId)   # \($0.name), pid \($0.pid), \($0.deviceName ?? "")" })
+            }
         }
     }
 
@@ -87,7 +115,12 @@ public enum Session {
             }
         }
         let agent = try Session.agent(platform, target)
-        return (IndexedSnapshot(try platform.snapshot(of: agent)), agent)
+        do {
+            return (IndexedSnapshot(try platform.snapshot(of: agent)), agent)
+        } catch var error as APVTError {
+            error.message = "\(agent.title): \(error.message)"
+            throw error
+        }
     }
 
     public static func save(_ snapshot: Snapshot, to path: String) throws {

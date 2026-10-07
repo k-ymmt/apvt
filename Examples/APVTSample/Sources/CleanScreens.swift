@@ -31,6 +31,12 @@ struct FeedScreen: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                // Wraps at the hyphen: correct, and must not read as squeezed.
+                Text("Alexandra Montgomery-Williamson")
+                    .font(.headline)
+                    .frame(width: 180, alignment: .leading)
+                    .padding(.horizontal)
+                    .accessibilityIdentifier("author")
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack {
                         ForEach(["All", "Design", "Engineering", "Marketing", "Sales", "Support", "Research"], id: \.self) { tag in

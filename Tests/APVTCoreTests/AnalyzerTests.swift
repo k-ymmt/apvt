@@ -85,3 +85,23 @@ struct AnalyzerTests {
         #expect(issues[firstWarning...].allSatisfy { $0.severity == .warning })
     }
 }
+
+@Suite("Things that look wrong but are not")
+struct NotIssuesTests {
+    /// "Montgomery-Williamson" wraps at the hyphen: the longest unbreakable piece is "Montgomery".
+    @Test func aHyphenatedNameWrappingAtTheHyphenIsNotSqueezed() throws {
+        let s = try Fixture.snapshot("feed")
+        let author = try #require(try NodeSelector("#author").select(in: s).first)
+        #expect(author.node.text?.longestWord == "Montgomery")
+        #expect(author.frame.width < (author.node.text?.singleLineWidth ?? 0))
+        #expect(Analyzer().analyze(s).isEmpty)
+    }
+
+    /// `.background(…).accessibilityIdentifier(…)` names the decorated column, not its content.
+    @Test func anIdentifierOnADecoratedContainerNamesTheContainer() throws {
+        let s = try Fixture.snapshot("pricing")
+        let column = try #require(try NodeSelector("#plan-free").select(in: s).first)
+        #expect(column.node.type == ".background")
+        #expect(column.frame.width == 150)
+    }
+}

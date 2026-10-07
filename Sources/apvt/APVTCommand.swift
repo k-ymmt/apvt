@@ -32,8 +32,9 @@ struct APVT: ParsableCommand {
           role:control   type:Text,text:Inbox (terms joined by commas)
 
         Frames are points, origin top-left of the screen: (x,y widthxheight).
-        Exit codes: 0 ok, 1 a check failed (assert, inspect --fail-on),
+        Exit codes: 0 ok, 1 a check failed (assert; inspect found an error),
         2 usage, 3 environment or app. Every command takes --json.
+        Right after launching an app, add --wait 10 so apvt waits for it.
         `apvt rules` lists what inspect checks and how to fix each.
         """,
         version: "0.1.0",
@@ -54,10 +55,13 @@ struct TargetOptions: ParsableArguments {
     @Option(help: ArgumentHelp("Read a snapshot saved with --save instead of asking the running app.", valueName: "file.json"))
     var snapshot: String?
 
+    @Option(help: ArgumentHelp("Wait up to this many seconds for the app's agent to appear, e.g. right after launching it.", valueName: "seconds"))
+    var wait: Double = 0
+
     @Option(help: .hidden)
     var platform: String = "ios-simulator"
 
-    var target: Target { Target(device: device, app: app, snapshotFile: snapshot) }
+    var target: Target { Target(device: device, app: app, snapshotFile: snapshot, wait: wait) }
 }
 
 struct JSONFlag: ParsableArguments {
@@ -211,7 +215,7 @@ struct Inspect: ParsableCommand {
     @Option(help: "Show at most this many issues (0 = all).")
     var limit: Int = 40
     @Option(help: ArgumentHelp("Exit 1 when an issue of this severity (or worse) is found: error, warning, never.", valueName: "severity"))
-    var failOn: String = "never"
+    var failOn: String = "error"
     @Option(help: "Smallest tappable size in points for small-target.")
     var minTarget: Double = 24
     @Option(help: ArgumentHelp("Also save the snapshot as JSON (for --snapshot later, or diffing).", valueName: "file.json"))

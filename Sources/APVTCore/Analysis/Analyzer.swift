@@ -173,7 +173,7 @@ public struct Analyzer: Sendable {
                e.frame.height >= (text.lineHeight ?? 1) * 0.5,
                e.node.source == .swiftui || (text.maxLines ?? 1) != 1 {
                 let words: [Substring] = text.string.split(whereSeparator: { (c: Character) in c.isWhitespace })
-                let longest = words.max(by: { $0.count < $1.count }).map { String($0) } ?? text.string
+                let longest = text.longestWord ?? words.max(by: { $0.count < $1.count }).map { String($0) } ?? text.string
                 let how = e.frame.width < 1 ? "has no width" : "is \(Describe.number(e.frame.width))pt wide"
                 issues.append(Issue(rule: .squeezed, severity: .error, ref: e.ref,
                                     message: "\(Describe.node(e)) \(Describe.frame(e.frame))\(inside) \(how), but the word \(Describe.quoted(longest)) needs \(Describe.number(word))pt: its characters wrap one per line or are not drawn",

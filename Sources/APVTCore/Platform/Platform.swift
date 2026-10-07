@@ -19,6 +19,8 @@ public protocol Platform: Sendable {
     func snapshot(of agent: RunningAgent) throws -> Snapshot
     /// A PNG of the device's screen, at the screen scale.
     func screenshot(of agent: RunningAgent, to url: URL) throws
+    /// Whether the agent answers within `timeout` (an app in the background is suspended and does not).
+    func ping(_ agent: RunningAgent, timeout: TimeInterval) -> Bool
     /// Raw responses for diagnostics (`swiftui-raw`, `methods`).
     func rawRequest(_ request: AgentRequest, to agent: RunningAgent) throws -> Data
 }
@@ -68,4 +70,8 @@ public struct RunningAgent: Sendable, Codable {
     public var runtime: String?
     public var swiftUIDebug: Bool
     public var loadedBy: String
+    public var startedAt: Date
+
+    /// `Laperm (app.kymmt.Laperm, pid 4012)`.
+    public var title: String { "\(name) (\(bundleId), pid \(pid))" }
 }

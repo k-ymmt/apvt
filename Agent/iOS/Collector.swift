@@ -279,9 +279,28 @@ struct Collector {
                 common = Array(zip(common, path).prefix(while: { $0 == $1 }).map(\.0))
             }
             guard !common.isEmpty else { continue }
+            // `.background(…).accessibilityIdentifier(…)` names the decorated view: climb from
+            // the common ancestor while the parent is a modifier whose other children are shapes.
+            while common.count > 1 {
+                let parentPath = Array(common.dropLast())
+                let parent = node(at: parentPath, in: nodes)
+                let others = parent.children.indices.filter { $0 != common.last! }.map { parent.children[$0] }
+                guard parent.type.hasPrefix("."), others.allSatisfy({ $0.role == .shape }) else { break }
+                common = parentPath
+            }
             apply(AXElement(frame: .zero, identifier: id, label: nil, isButton: false), at: common, to: &nodes)
         }
         return nodes.map(measure)
+    }
+
+    private func node(at path: [Int], in nodes: [Node]) -> Node {
+        var list = nodes
+        var current = nodes[path[0]]
+        for index in path {
+            current = list[index]
+            list = current.children
+        }
+        return current
     }
 
     /// Recorded coordinates to screen points; system subtrees marked.
@@ -332,9 +351,10 @@ struct Collector {
     private func accessibilityElements(of view: UIView) -> [AXElement] {
         var result: [AXElement] = []
         var visited = 0
+        var seen = Set<ObjectIdentifier>()
         func visit(_ object: NSObject, depth: Int) {
             visited += 1
-            guard depth < 40, visited < 5000 else { return }
+            guard depth < 40, visited < 5000, seen.insert(ObjectIdentifier(object)).inserted else { return }
             // SwiftUI's nodes answer accessibilityIdentifier without declaring the protocol.
             let identifier = (object as? UIAccessibilityIdentification)?.accessibilityIdentifier
                 ?? (object.responds(to: Self.identifierSelector) ? object.perform(Self.identifierSelector)?.takeUnretainedValue() as? String : nil)
@@ -355,6 +375,17 @@ struct Collector {
             }
         }
         visit(view, depth: 0)
+        // A ScrollView's elements hang off the UIScrollView SwiftUI made for it, not the hosting
+        // view: visit the UIKit views under this hosting view too, up to the next hosting view.
+        func walk(_ v: UIView) {
+            for sub in v.subviews where !isHostingView(sub) && !(sub is UINavigationBar) && !(sub is UITabBar) && !(sub is UIToolbar) {
+                // SwiftUI's own UIKit containers (PlatformContainer, HostingScrollView) only:
+                // UIKit's navigation views announce elements of their own ("Toolbar").
+                if isSwiftUIModuleClass(NSStringFromClass(type(of: sub))) { visit(sub, depth: 0) }
+                walk(sub)
+            }
+        }
+        walk(view)
         return result
     }
 

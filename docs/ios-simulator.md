@@ -58,6 +58,27 @@ being the layout frame in the hosting view's coordinates.
   wrapped at the frame's width, is as tall as the frame; issues relying on a guessed font are
   warnings.
 
+- A ScrollView's accessibility elements hang off SwiftUI's UIKit containers under the hosting
+  view (`PlatformContainer`, `HostingScrollView`), not off the hosting view: the agent visits
+  those too, but not UIKit's navigation views, which announce elements of their own ("Toolbar").
+- `.background(…).accessibilityIdentifier(…)`: the elements carrying the identifier are the
+  content's; their common ancestor is climbed through modifier nodes whose other children are
+  shapes, so the identifier names the decorated container (as the code reads).
+- Words for `squeezed` are the system's word breaks (`enumerateSubstrings(.byWords)`):
+  "Montgomery-Williamson" wraps at the hyphen and must not count as one word.
+
+## Using it as an agent (measured with a subagent fixing the sample)
+
+A Sonnet subagent, given only `apvt --help`, found and fixed the pricing and profile screens and
+verified with `assert`. What it hit, and what changed:
+
+- an app in the background is suspended and its agent never answers: a 2 s ping now picks the
+  one answering app, and names the silent ones with the command that brings them forward;
+- right after `simctl launch` the agent is not there yet: `--wait <seconds>` waits for it and for
+  the first screen (1.5 s after start);
+- `inspect` exited 0 with errors: it now exits 1 on errors by default;
+- the hyphen false positive and the identifier on the inner VStack (both above).
+
 ## UIKit
 
 - `-[UIView engine:willBreakConstraint:dueToMutuallyExclusiveConstraints:]` is called before every

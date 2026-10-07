@@ -43,9 +43,12 @@ apvt screenshot shot.png   # issues outlined and labelled @N
 apvt rules                 # what inspect checks and how to fix each
 ```
 
-Every command takes `--json`, `--device <name|udid>` and `--app <bundle-id>`; `inspect` and
-`tree` take `--save file.json`, and any command can read it back with `--snapshot file.json`.
-Errors say what happened, why, and the command that fixes it.
+Every command takes `--json`, `--device <name|udid>`, `--app <bundle-id>` and `--wait <seconds>`
+(wait for a just-launched app); `inspect` and `tree` take `--save file.json`, and any command can
+read it back with `--snapshot file.json`. Without `--app`, apvt picks the one app whose agent
+answers — only the foreground app does, iOS suspends the others. `inspect` exits 1 when it finds
+an error (`--fail-on warning|never` to change). Errors say what happened, why, and the command
+that fixes it.
 
 ### What `inspect` checks
 

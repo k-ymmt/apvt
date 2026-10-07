@@ -24,8 +24,17 @@ enum TextMeasure {
             with: CGSize(width: max(width, 0.01), height: .greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: attributes, context: nil)
         info.requiredHeight = Double(ceil(bounding.height))
-        let words = string.split(whereSeparator: { $0.isWhitespace || $0.isNewline })
-        info.longestWordWidth = words.map { Double(ceil(($0 as NSString).size(withAttributes: attributes).width)) }.max()
+        // The longest piece a line cannot break inside: words as the system splits them, so
+        // "Montgomery-Williamson" is two (it wraps at the hyphen) and CJK text is not one.
+        var widest = 0.0
+        var widestWord: String?
+        ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length), options: [.byWords, .localized]) { word, _, _, _ in
+            guard let word else { return }
+            let width = Double(ceil((word as NSString).size(withAttributes: attributes).width))
+            if width > widest { widest = width; widestWord = word }
+        }
+        info.longestWordWidth = widest
+        info.longestWord = widestWord
     }
 
     /// The font a SwiftUI `Text` is drawn in, as far as the debug data and its frame tell.

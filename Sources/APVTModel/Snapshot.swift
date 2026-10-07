@@ -164,6 +164,7 @@ public struct TextInfo: Codable, Sendable {
     public var requiredHeight: Double?
     /// Width of the longest word: narrower than this and words break mid-word.
     public var longestWordWidth: Double?
+    public var longestWord: String?
     /// A text field's placeholder; `string` is its text.
     public var placeholder: String?
 

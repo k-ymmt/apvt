@@ -14,7 +14,7 @@ public enum AgentClient {
             throw APVTError(.agent, "socket path too long: \(path)")
         }
         withUnsafeMutableBytes(of: &addr.sun_path) { $0.copyBytes(from: bytes) }
-        var tv = timeval(tv_sec: Int(timeout), tv_usec: 0)
+        var tv = timeval(tv_sec: Int(timeout), tv_usec: Int32((timeout - Double(Int(timeout))) * 1_000_000))
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         let connected = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
@@ -34,9 +34,9 @@ public enum AgentClient {
             let n = read(fd, &chunk, chunk.count)
             if n < 0 {
                 if errno == EAGAIN || errno == EWOULDBLOCK {
-                    throw APVTError(.agent, "the agent did not answer within \(Int(timeout))s",
-                                    why: "the app's main thread is busy or paused (a breakpoint in Xcode stops it).",
-                                    fix: ["resume the app in Xcode if it is paused, then retry"])
+                    throw APVTError(.agent, "the agent did not answer within \(Describe.number(timeout))s",
+                                    why: "the app is in the background (iOS suspends it), or its main thread is busy or paused at a breakpoint.",
+                                    fix: ["bring the app to the foreground (xcrun simctl launch booted <bundle-id> does), or resume it in Xcode, then retry"])
                 }
                 throw APVTError(.agent, "reading from the agent failed: \(String(cString: strerror(errno)))")
             }

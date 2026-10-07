@@ -124,7 +124,8 @@ public struct IOSSimulatorPlatform: Platform {
 
     private func agent(_ a: AgentAnnouncement, _ device: Simctl.Device) -> RunningAgent {
         RunningAgent(bundleId: a.bundleId, name: a.name, pid: a.pid, socket: a.socket, deviceUDID: device.udid,
-                     deviceName: device.name, runtime: device.runtime, swiftUIDebug: a.swiftUIDebug, loadedBy: a.loadedBy)
+                     deviceName: device.name, runtime: device.runtime, swiftUIDebug: a.swiftUIDebug, loadedBy: a.loadedBy,
+                     startedAt: a.startedAt)
     }
 
     public func snapshot(of agent: RunningAgent) throws -> Snapshot {
@@ -150,6 +151,10 @@ public struct IOSSimulatorPlatform: Platform {
         guard result.ok else {
             throw APVTError(.environment, "simctl could not take a screenshot", why: result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
         }
+    }
+
+    public func ping(_ agent: RunningAgent, timeout: TimeInterval) -> Bool {
+        (try? AgentClient.send(AgentRequest(cmd: "ping"), socket: agent.socket, timeout: timeout)) != nil
     }
 
     public func rawRequest(_ request: AgentRequest, to agent: RunningAgent) throws -> Data {
