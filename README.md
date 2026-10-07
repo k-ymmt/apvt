@@ -22,6 +22,18 @@ next: apvt query @14   # the node, its ancestors and metrics · apvt tree · apv
 
 Requires macOS 15+, Xcode with the iOS Simulator platform, Swift 6.2+ (the agent uses `@section`).
 
+From a release (a universal binary for Apple silicon and Intel):
+
+```bash
+curl -fsSL https://github.com/k-ymmt/apvt/releases/latest/download/apvt-macos.tar.gz | tar xz
+mv apvt /usr/local/bin/   # or anywhere on PATH
+```
+
+The binary is not notarized: download it with `curl` as above (a browser download is quarantined
+and blocked by Gatekeeper; `xattr -d com.apple.quarantine apvt` lifts that).
+
+From source:
+
 ```bash
 swift build -c release
 cp .build/release/apvt /usr/local/bin/   # or anywhere on PATH
