@@ -206,8 +206,8 @@ struct LaunchEnv: ParsableCommand {
         For launches apvt setup cannot reach: Xcode's Run and Xcode MCP's \
         DeviceInteractionInstallAndRun pass their own DYLD_INSERT_LIBRARIES, which replaces \
         the one apvt setup puts into launchd. Pass these variables to that launch instead, for \
-        example as DeviceInteractionInstallAndRun's environmentVariables (add "$(inherited)": "" \
-        to keep the scheme's own), or in the scheme's Run > Environment Variables. The app then \
+        example as DeviceInteractionInstallAndRun's environmentVariables (--xcode adds \
+        "$(inherited)": "" to keep the scheme's own), or in the scheme's Run > Environment Variables. The app then \
         runs under Xcode, with its console, and answers apvt. Builds the agent if needed and \
         turns on the simulator's application accessibility (as setup does); launchd is left \
         alone.
@@ -218,10 +218,13 @@ struct LaunchEnv: ParsableCommand {
     var device: String?
     @Flag(help: "Print KEY=value lines instead of JSON.")
     var shell = false
+    @Flag(help: ArgumentHelp("Add \"$(inherited)\": \"\" so the JSON can be passed as-is to Xcode MCP's DeviceInteractionInstallAndRun environmentVariables, keeping the scheme's own variables."))
+    var xcode = false
 
     func run() throws {
         try apvt.run(json: !shell) {
-            let env = try Session.launchEnvironment(device: device)
+            var env = try Session.launchEnvironment(device: device)
+            if xcode { env["$(inherited)"] = "" }
             if shell {
                 env.keys.sorted().forEach { print("\($0)=\(env[$0]!)") }
             } else {
