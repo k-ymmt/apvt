@@ -133,3 +133,47 @@ public enum Session {
         }
     }
 }
+
+extension Session {
+    /// Types into whatever has keyboard focus in the app (`apvt type`).
+    public static func type(_ platform: any Platform, _ target: Target, text: String, replace: Bool, submit: Bool) throws -> (AgentTypeResponse, RunningAgent) {
+        let agent = try Session.agent(platform, target)
+        let data: Data
+        do {
+            data = try platform.rawRequest(AgentRequest(cmd: "type", text: text, replace: replace, submit: submit), to: agent)
+        } catch var error as APVTError {
+            // The agent answers ok:false when nothing has focus; say what to do about it.
+            error.message = "\(agent.title): \(error.message.replacingOccurrences(of: "the agent refused type: ", with: ""))"
+            if error.fix.isEmpty {
+                error.fix = ["tap the text field first (its hitPoint in the simulator's hierarchy, or the center of `apvt query <selector>`), then apvt type again",
+                             "apvt setup --rebuild   # if the agent says unknown cmd type: it predates apvt type; then relaunch the app"]
+            }
+            throw error
+        }
+        guard let response = try? JSONDecoder().decode(AgentTypeResponse.self, from: data) else {
+            let message = (try? JSONDecoder().decode(AgentErrorResponse.self, from: data))?.error ?? String(decoding: data, as: UTF8.self)
+            throw APVTError(.agent, "\(agent.title): the agent did not type", why: message,
+                            fix: ["apvt setup --rebuild   # the running agent may be older than this apvt; then relaunch the app"])
+        }
+        guard response.ok else {
+            throw APVTError(.agent, "\(agent.title): \(response.error ?? "typing failed")",
+                            why: response.focused.map { "focused: \($0)" },
+                            fix: ["tap the text field (its hitPoint in the hierarchy, or the center of `apvt query <selector>`), then apvt type again"])
+        }
+        return (response, agent)
+    }
+
+    /// Environment that makes an app launched by someone else (Xcode's Run, Xcode MCP
+    /// `DeviceInteractionInstallAndRun`, a scheme) load the agent, without `apvt setup`'s launchd change.
+    public static func launchEnvironment(device: String?) throws -> [String: String] {
+        let products = try AgentBuilder.ensure()
+        if let device = try? Simctl.resolveBooted(device) {
+            // SwiftUI accessibility identifiers need it; read at app launch (see setup).
+            _ = try? Simctl.spawn(device.udid, ["defaults", "write", "com.apple.Accessibility", "ApplicationAccessibilityEnabled", "-bool", "true"])
+        }
+        return [
+            "DYLD_INSERT_LIBRARIES": products.agent.path,
+            "APVT_LOADED_BY": "env",
+        ]
+    }
+}

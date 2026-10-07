@@ -17,7 +17,7 @@ let apvtLoaderInitializer: @convention(c) () -> Void = {
     guard _NSGetExecutablePath(&buffer, &size) == 0 else { return }
     let path = String(decoding: buffer.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }, as: UTF8.self)
     guard path.contains("/data/Containers/Bundle/Application/"), let agent = getenv("APVT_AGENT_PATH") else { return }
-    setenv("APVT_LOADED_BY", "launchd", 1)
+    setenv("APVT_LOADED_BY", "launchd", 0) // keep a value the launcher set (apvt launch-env)
     if dlopen(agent, RTLD_NOW) == nil, let error = dlerror() {
         fputs("[apvt-loader] \(String(cString: error))\n", stderr)
     }

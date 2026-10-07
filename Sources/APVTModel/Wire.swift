@@ -17,16 +17,24 @@ public enum AgentWire {
 }
 
 public struct AgentRequest: Codable, Sendable {
-    /// `ping`, `snapshot`, `swiftui-raw`, `methods`.
+    /// `ping`, `snapshot`, `swiftui-raw`, `methods`, `type`.
     public var cmd: String
     /// For `methods`: a class name and an optional substring.
     public var className: String?
     public var match: String?
+    /// For `type`: the text, whether it replaces the field's text, and whether Return follows.
+    public var text: String?
+    public var replace: Bool?
+    public var submit: Bool?
 
-    public init(cmd: String, className: String? = nil, match: String? = nil) {
+    public init(cmd: String, className: String? = nil, match: String? = nil,
+                text: String? = nil, replace: Bool? = nil, submit: Bool? = nil) {
         self.cmd = cmd
         self.className = className
         self.match = match
+        self.text = text
+        self.replace = replace
+        self.submit = submit
     }
 }
 
@@ -69,6 +77,25 @@ public struct AgentSnapshotResponse: Codable, Sendable {
     public var snapshot: Snapshot
     /// Milliseconds spent collecting, for the curious and for performance work.
     public var elapsedMs: Int
+}
+
+/// The answer to `type`: which responder got the text and its value afterwards.
+public struct AgentTypeResponse: Codable, Sendable {
+    public var ok: Bool
+    public var error: String?
+    /// `UITextField #new-task placeholder:"New task"`.
+    public var focused: String?
+    public var value: String?
+    /// What has keyboard focus after typing (nil: nothing, e.g. after submit ended editing).
+    public var focusedAfter: String?
+
+    public init(ok: Bool, error: String? = nil, focused: String? = nil, value: String? = nil, focusedAfter: String? = nil) {
+        self.ok = ok
+        self.error = error
+        self.focused = focused
+        self.value = value
+        self.focusedAfter = focusedAfter
+    }
 }
 
 public struct AgentErrorResponse: Codable, Sendable {

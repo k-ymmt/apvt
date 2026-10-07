@@ -128,8 +128,11 @@ enum AgentServer {
             return DispatchQueue.main.sync { MainActor.assumeIsolated { Collector().rawSwiftUIData() } }
         case "methods":
             return methods(className: request.className ?? "", match: request.match ?? "")
+        case "type":
+            let response = DispatchQueue.main.sync { MainActor.assumeIsolated { Typer.insert(request) } }
+            return (try? encoder.encode(response)) ?? errorData("encode failed")
         default:
-            return errorData("unknown cmd \(request.cmd) (ping, snapshot, swiftui-raw, methods)")
+            return errorData("unknown cmd \(request.cmd) (ping, snapshot, swiftui-raw, methods, type)")
         }
     }
 
