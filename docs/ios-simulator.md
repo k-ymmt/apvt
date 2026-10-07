@@ -26,6 +26,17 @@ and `lldb-rpc-server` reads `.lldbinit` (not `.lldbinit-lldb-rpc-server`). With 
 Thread Checker loaded the agent (`loaded by xcode`) and `apvt inspect` answered. So the hook lives
 in `~/.lldbinit`; `apvt setup --xcode` moves an older `~/.lldbinit-Xcode` block there.
 
+**The second real Xcode Run** read `~/.lldbinit` (the breakpoint fired) but stopped the app at
+`UIApplicationMain` instead of continuing, with the breakpoint twice (`breakpoint 1.1 2.1`): Xcode
+sources the init file more than once, and LLDB stops when a breakpoint's command fails, whatever
+auto-continue says. The hook is now `command script import` of `apvt_lldb.py` (written next to the
+agent): it creates the breakpoint once per debugger (by name, in the dummy target), evaluates
+`setenv` / `dlopen` with explicit C expression options, skips non-simulator targets and apps the
+launchd loader already reached, always returns False (never stops the app), and logs each hit to
+`/tmp/apvt-<uid>/xcode-hook.log`. Measured with the `lldb-rpc-server` copy sourcing the init file
+twice: one breakpoint, "agent loaded", the app running, `inspect` answering (iOS 26.5 too).
+apvt reads `HOME` for the init file, as LLDB does (FileManager ignores it).
+
 The loader (`Agent/Loader`) links only libSystem and the Swift runtime; daemons load it and
 return. It checks `_NSGetExecutablePath` for `/data/Containers/Bundle/Application/` (image 0 is
 the inserted library itself, not the executable).

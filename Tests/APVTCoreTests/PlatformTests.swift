@@ -6,12 +6,19 @@ import Testing
 struct PlatformTests {
     @Test func lldbHookBlockIsReplacedAndRemovedCleanly() {
         let user = "settings set target.x 1\n"
-        let block = XcodeLLDBHook.block(agentPath: "/tmp/agent.dylib")
-        #expect(block.contains("breakpoint set --name UIApplicationMain --auto-continue true"))
-        #expect(block.contains("dlopen(\\\"/tmp/agent.dylib\\\", 2)"))
+        let block = XcodeLLDBHook.block(scriptPath: "/tmp/apvt_lldb.py")
+        #expect(block.contains("command script import \"/tmp/apvt_lldb.py\""))
         let installed = user + block + "\n"
         #expect(XcodeLLDBHook.remove(from: installed) == user)
         #expect(XcodeLLDBHook.remove(from: user) == user)
+    }
+
+    @Test func lldbScriptNeverStopsTheAppAndSetsOneBreakpoint() {
+        let script = XcodeLLDBHook.script(agentPath: "/tmp/a \"b\"/libapvt-agent.dylib")
+        #expect(script.contains("AGENT = \"/tmp/a \\\"b\\\"/libapvt-agent.dylib\""))
+        #expect(script.contains("FindBreakpointsByName(NAME, existing)"))
+        #expect(script.contains("bp.SetAutoContinue(True)"))
+        #expect(script.components(separatedBy: "return False").count >= 4)
     }
 
     /// Xcode 27 debugs from `lldb-rpc-server`, which reads `~/.lldbinit`, not `~/.lldbinit-Xcode`.
