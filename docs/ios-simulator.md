@@ -12,9 +12,19 @@ injection and an Objective-C agent; apvt keeps the injection idea and measures t
 | `simctl spawn <udid> launchctl setenv DYLD_INSERT_LIBRARIES` | every process launched afterwards loads it (apps and daemons) | **`apvt setup`**, with a loader that acts only in user apps |
 | a per-launch `DYLD_INSERT_LIBRARIES` (what Xcode's Main Thread Checker passes) | replaces launchd's value: the loader is not loaded | Xcode Run needs another way |
 | `lldb` attach + `expr dlopen(...)` on a running Debug build | works (3–11 s); refused while Xcode's debugger is attached | used inside Xcode instead: |
-| auto-continuing `UIApplicationMain` breakpoint that `dlopen`s, set before the target exists (as `~/.lldbinit-Xcode` is) | loads the agent under a debugger with the Main Thread Checker injected; SwiftUI debug data complete | **`apvt setup --xcode`** |
+| auto-continuing `UIApplicationMain` breakpoint that `dlopen`s, set before the target exists (as an init file is) | loads the agent under a debugger with the Main Thread Checker injected; SwiftUI debug data complete | **`apvt setup --xcode`** |
 
 LLDB breakpoint names may not contain `-` (`apvt_agent`, not `apvt-agent`).
+
+**Which init file Xcode reads.** The first real Xcode Run did not load the agent with the hook in
+`~/.lldbinit-Xcode`. LLDB sources `~/.lldbinit-<program>` when it exists, else `~/.lldbinit`;
+Xcode itself has no init-file code (no `lldbinit` string in its plug-ins), and Xcode 27 debugs
+from `lldb-rpc-server`. Measured with copies of Xcode's `lldb` under a temporary HOME holding
+every candidate file: a copy named `Xcode` reads `.lldbinit-Xcode`, `lldb` reads `.lldbinit-lldb`,
+and `lldb-rpc-server` reads `.lldbinit` (not `.lldbinit-lldb-rpc-server`). With the hook in that
+`.lldbinit`, the `lldb-rpc-server` copy attached to a wait-for-debugger launch carrying the Main
+Thread Checker loaded the agent (`loaded by xcode`) and `apvt inspect` answered. So the hook lives
+in `~/.lldbinit`; `apvt setup --xcode` moves an older `~/.lldbinit-Xcode` block there.
 
 The loader (`Agent/Loader`) links only libSystem and the Swift runtime; daemons load it and
 return. It checks `_NSGetExecutablePath` for `/data/Containers/Bundle/Application/` (image 0 is

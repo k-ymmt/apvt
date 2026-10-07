@@ -14,6 +14,12 @@ struct PlatformTests {
         #expect(XcodeLLDBHook.remove(from: user) == user)
     }
 
+    /// Xcode 27 debugs from `lldb-rpc-server`, which reads `~/.lldbinit`, not `~/.lldbinit-Xcode`.
+    @Test func theHookGoesWhereXcodesDebuggerLooks() {
+        #expect(XcodeLLDBHook.file.lastPathComponent == ".lldbinit")
+        #expect(XcodeLLDBHook.legacyFile.lastPathComponent == ".lldbinit-Xcode")
+    }
+
     @Test func runtimeNamesReadLikeXcode() {
         #expect(Simctl.runtimeName("com.apple.CoreSimulator.SimRuntime.iOS-27-0") == "iOS 27.0")
         #expect(Simctl.runtimeName("com.apple.CoreSimulator.SimRuntime.watchOS-26-5") == "watchOS 26.5")

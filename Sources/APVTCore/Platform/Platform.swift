@@ -27,7 +27,7 @@ public protocol Platform: Sendable {
 
 public struct SetupOptions: Sendable {
     public var device: String?
-    /// Also install / remove the `~/.lldbinit-Xcode` hook for apps Xcode runs under its debugger.
+    /// Also install / remove the `~/.lldbinit` hook for apps Xcode runs under its debugger.
     public var xcode: Bool
     public var rebuild: Bool
 

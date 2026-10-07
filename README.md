@@ -73,7 +73,8 @@ Contrast is not checked.
   loader; in user-installed apps only, the loader `dlopen`s the agent. Xcode's Run passes its own
   `DYLD_INSERT_LIBRARIES` (Main Thread Checker), which replaces launchd's, so
   `apvt setup --xcode` also adds an auto-continuing `UIApplicationMain` breakpoint to
-  `~/.lldbinit-Xcode` that `dlopen`s the agent under Xcode's debugger.
+  `~/.lldbinit` (what Xcode 27's `lldb-rpc-server` reads; not `~/.lldbinit-Xcode`) that
+  `dlopen`s the agent under Xcode's debugger.
 - **SwiftUI.** The agent sets `SWIFTUI_VIEW_DEBUG` before SwiftUI builds its first view graph and
   reads each hosting view's `makeViewDebugData()`: SwiftUI's own layout (types, frames,
   modifiers, texts). ScrollView content is mapped through the UIScrollView SwiftUI made for it.

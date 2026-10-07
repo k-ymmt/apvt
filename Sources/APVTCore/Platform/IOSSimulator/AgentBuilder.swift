@@ -6,7 +6,7 @@ import Foundation
 /// Built on this machine because a simulator dylib must match the host's architecture and the
 /// installed SDK, and Xcode — which apvt needs anyway — makes it a few seconds' work. Builds are
 /// cached by content under `~/Library/Caches/apvt/ios-simulator/<hash>/`; `current/` always
-/// holds the latest, so the paths written into launchd and `~/.lldbinit-Xcode` stay valid when
+/// holds the latest, so the paths written into launchd and `~/.lldbinit` stay valid when
 /// apvt is updated.
 enum AgentBuilder {
     struct Products {
