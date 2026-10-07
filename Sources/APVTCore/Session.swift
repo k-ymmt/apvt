@@ -151,6 +151,13 @@ extension Session {
             throw error
         }
         guard let response = try? JSONDecoder().decode(AgentTypeResponse.self, from: data) else {
+            // Typing (above all --submit) can run app code that crashes before the agent answers.
+            if !platform.ping(agent, timeout: 2) {
+                throw APVTError(.agent, "\(agent.title) stopped answering while typing",
+                                why: "the app most likely crashed or froze in code that the text or Return triggered (an .onSubmit, a delegate, a binding).",
+                                fix: ["capture the screen (Xcode MCP DeviceInteractionSynthesize: applicationState Crashed, SpringBoard in front) and read the console for the reason",
+                                      "apvt status   # the app is gone from the list if it crashed"])
+            }
             let message = (try? JSONDecoder().decode(AgentErrorResponse.self, from: data))?.error ?? String(decoding: data, as: UTF8.self)
             throw APVTError(.agent, "\(agent.title): the agent did not type", why: message,
                             fix: ["apvt setup --rebuild   # the running agent may be older than this apvt; then relaunch the app"])
