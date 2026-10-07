@@ -4,27 +4,13 @@ import Testing
 
 @Suite("iOS Simulator platform pieces")
 struct PlatformTests {
-    @Test func lldbHookBlockIsReplacedAndRemovedCleanly() {
+    /// `apvt teardown` / `setup` remove what earlier versions put into LLDB init files.
+    @Test func oldLLDBHookIsRemovedCleanly() {
         let user = "settings set target.x 1\n"
-        let block = XcodeLLDBHook.block(scriptPath: "/tmp/apvt_lldb.py")
-        #expect(block.contains("command script import \"/tmp/apvt_lldb.py\""))
-        let installed = user + block + "\n"
-        #expect(XcodeLLDBHook.remove(from: installed) == user)
-        #expect(XcodeLLDBHook.remove(from: user) == user)
-    }
-
-    @Test func lldbScriptNeverStopsTheAppAndSetsOneBreakpoint() {
-        let script = XcodeLLDBHook.script(agentPath: "/tmp/a \"b\"/libapvt-agent.dylib")
-        #expect(script.contains("AGENT = \"/tmp/a \\\"b\\\"/libapvt-agent.dylib\""))
-        #expect(script.contains("FindBreakpointsByName(NAME, existing)"))
-        #expect(script.contains("bp.SetAutoContinue(True)"))
-        #expect(script.components(separatedBy: "return False").count >= 4)
-    }
-
-    /// Xcode 27 debugs from `lldb-rpc-server`, which reads `~/.lldbinit`, not `~/.lldbinit-Xcode`.
-    @Test func theHookGoesWhereXcodesDebuggerLooks() {
-        #expect(XcodeLLDBHook.file.lastPathComponent == ".lldbinit")
-        #expect(XcodeLLDBHook.legacyFile.lastPathComponent == ".lldbinit-Xcode")
+        let old = "\(LegacyLLDBHook.begin)\ncommand script import \"/tmp/apvt_lldb.py\"\n\(LegacyLLDBHook.end)\n"
+        #expect(LegacyLLDBHook.remove(from: user + old) == user)
+        #expect(LegacyLLDBHook.remove(from: user) == user)
+        #expect(LegacyLLDBHook.files.map(\.lastPathComponent) == [".lldbinit", ".lldbinit-Xcode"])
     }
 
     @Test func runtimeNamesReadLikeXcode() {

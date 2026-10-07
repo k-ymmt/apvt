@@ -27,13 +27,10 @@ public protocol Platform: Sendable {
 
 public struct SetupOptions: Sendable {
     public var device: String?
-    /// Also install / remove the `~/.lldbinit` hook for apps Xcode runs under its debugger.
-    public var xcode: Bool
     public var rebuild: Bool
 
-    public init(device: String?, xcode: Bool, rebuild: Bool = false) {
+    public init(device: String?, rebuild: Bool = false) {
         self.device = device
-        self.xcode = xcode
         self.rebuild = rebuild
     }
 }
@@ -56,7 +53,8 @@ public struct PlatformStatus: Sendable, Codable {
     }
 
     public var devices: [Device]
-    public var xcodeHook: Bool
+    /// An LLDB init-file hook from an earlier apvt is still installed (`apvt teardown` removes it).
+    public var oldLLDBHook: Bool
     public var agentBuild: String?
 }
 

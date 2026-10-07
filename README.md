@@ -33,8 +33,8 @@ The binary carries the agent's sources and builds the agent for the simulator on
 ## Use
 
 ```bash
-apvt setup                 # once per simulator boot; add --xcode if you Run from Xcode
-xcrun simctl launch booted <bundle-id>   # or Xcode Run / Xcode MCP / the home screen
+apvt setup                 # once per simulator boot
+xcrun simctl launch booted <bundle-id>   # or the home screen (not Xcode's Run; relaunch after it)
 apvt inspect               # issues on the current screen
 apvt query @14             # one node: ancestors, text metrics, issues
 apvt tree                  # the view tree with frames
@@ -70,11 +70,11 @@ Contrast is not checked.
 ## How it works
 
 - **Injection.** `apvt setup` sets `DYLD_INSERT_LIBRARIES` in the simulator's launchd to a tiny
-  loader; in user-installed apps only, the loader `dlopen`s the agent. Xcode's Run passes its own
-  `DYLD_INSERT_LIBRARIES` (Main Thread Checker), which replaces launchd's, so
-  `apvt setup --xcode` also adds an auto-continuing `UIApplicationMain` breakpoint to
-  `~/.lldbinit` (what Xcode 27's `lldb-rpc-server` reads; not `~/.lldbinit-Xcode`) that
-  `dlopen`s the agent under Xcode's debugger.
+  loader; in user-installed apps only, the loader `dlopen`s the agent. Apps launched with
+  `xcrun simctl launch` or from the home screen get it. **Xcode's Run does not**: it passes its
+  own `DYLD_INSERT_LIBRARIES` (Main Thread Checker), which replaces launchd's, and loading the agent
+  through Xcode's debugger did not work (see the docs). Build/run with Xcode, then relaunch with
+  `xcrun simctl launch <udid> <bundle-id>`.
 - **SwiftUI.** The agent sets `SWIFTUI_VIEW_DEBUG` before SwiftUI builds its first view graph and
   reads each hosting view's `makeViewDebugData()`: SwiftUI's own layout (types, frames,
   modifiers, texts). ScrollView content is mapped through the UIScrollView SwiftUI made for it.

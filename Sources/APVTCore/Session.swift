@@ -82,19 +82,19 @@ public enum Session {
         for device in status.devices {
             if !device.setUp {
                 why = "apvt setup has not been run on \(device.name) since it booted, so apps do not load the agent."
-                fix.append("apvt setup --device \(device.udid)\(status.xcodeHook ? " --xcode" : "")   # then relaunch the app")
+                fix.append("apvt setup --device \(device.udid)   # then relaunch the app")
                 continue
             }
             let candidates = device.appsWithoutAgent.filter { app == nil || $0 == app }
             if !candidates.isEmpty {
-                why = "the app was launched before apvt setup (or by Xcode without the --xcode hook), so it has no agent."
+                why = "the app was launched before apvt setup, or by Xcode's Run: Xcode passes its own DYLD_INSERT_LIBRARIES (Main Thread Checker), which replaces apvt's, so the app has no agent."
                 for bundle in candidates {
                     fix.append("xcrun simctl terminate \(device.udid) \(bundle) && xcrun simctl launch \(device.udid) \(bundle)")
                 }
-                if !status.xcodeHook { fix.append("apvt setup --xcode   # if the app is run from Xcode, then Run again") }
+                fix.append("from Xcode: stop the Run, then relaunch with the command above")
             } else {
                 why = why ?? "the app is not running on \(device.name)."
-                fix.append("xcrun simctl launch \(device.udid) \(app ?? "<bundle-id>")   # or Run it from Xcode")
+                fix.append("xcrun simctl launch \(device.udid) \(app ?? "<bundle-id>")   # installs nothing: build/install it first (xcodebuild, or Xcode Run then this)")
             }
         }
         fix.append("apvt status   # shows setup, running apps and their agents")

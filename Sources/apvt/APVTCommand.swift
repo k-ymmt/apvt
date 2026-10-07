@@ -17,8 +17,9 @@ struct APVT: ParsableCommand {
 
         WORKFLOW
           1. apvt setup            once per simulator boot
-                                   (add --xcode if you Run from Xcode)
-          2. launch the app        simctl, Xcode Run, Xcode MCP, home screen
+          2. launch the app        xcrun simctl launch, or the home screen
+                                   (not Xcode's Run: its debugger setup drops
+                                   the agent; relaunch with simctl after it)
           3. go to the screen      with your usual tools (taps, deep links)
           4. apvt inspect          issues on the current screen, with @N
           5. apvt query @N         one node: ancestors, text metrics, issues
@@ -119,26 +120,24 @@ struct Setup: ParsableCommand {
         discussion: """
         Builds the agent for the simulator (first run, a few seconds; cached), then sets \
         DYLD_INSERT_LIBRARIES in the simulator's launchd so every app launched afterwards — by \
-        simctl, the home screen, or Xcode without its debugger — loads it. Apps already running \
-        must be relaunched. Lasts until the simulator shuts down.
+        simctl or the home screen — loads it. Apps already running must be \
+        relaunched. Lasts until the simulator shuts down.
 
-        --xcode also adds a breakpoint to ~/.lldbinit that loads the agent into apps Xcode \
-        runs under its debugger (Xcode's Main Thread Checker replaces launchd's \
-        DYLD_INSERT_LIBRARIES). It stays until `apvt teardown --xcode`.
+        Xcode's Run is not supported: it passes its own DYLD_INSERT_LIBRARIES (Main Thread \
+        Checker), which replaces apvt's. After building and running from Xcode, relaunch the \
+        app with `xcrun simctl launch <udid> <bundle-id>`.
         """
     )
 
     @Option(help: "Simulator name or UDID. Default: the only booted simulator.")
     var device: String?
-    @Flag(help: "Also hook Xcode's debugger (~/.lldbinit) for apps run from Xcode.")
-    var xcode = false
     @Flag(help: "Rebuild the agent even if a cached build exists.")
     var rebuild = false
     @OptionGroup var output: JSONFlag
 
     func run() throws {
         try apvt.run(json: output.json) {
-            let report = try Session.platform("ios-simulator").setup(SetupOptions(device: device, xcode: xcode, rebuild: rebuild))
+            let report = try Session.platform("ios-simulator").setup(SetupOptions(device: device, rebuild: rebuild))
             if output.json { printJSON(report); return 0 }
             print("set up \(report.device):")
             report.actions.forEach { print("- \($0)") }
@@ -154,13 +153,11 @@ struct Teardown: ParsableCommand {
 
     @Option(help: "Simulator name or UDID. Default: the only booted simulator.")
     var device: String?
-    @Flag(help: "Also remove the hook from ~/.lldbinit.")
-    var xcode = false
     @OptionGroup var output: JSONFlag
 
     func run() throws {
         try apvt.run(json: output.json) {
-            let report = try Session.platform("ios-simulator").teardown(SetupOptions(device: device, xcode: xcode))
+            let report = try Session.platform("ios-simulator").teardown(SetupOptions(device: device))
             if output.json { printJSON(report); return 0 }
             print("tore down \(report.device):")
             report.actions.forEach { print("- \($0)") }
@@ -191,7 +188,7 @@ struct Status: ParsableCommand {
                 }
                 if d.agents.isEmpty && d.appsWithoutAgent.isEmpty { print("  no user app running") }
             }
-            print("xcode hook (~/.lldbinit): \(status.xcodeHook ? "installed" : "not installed (apvt setup --xcode)")")
+            if status.oldLLDBHook { print("an old apvt hook is still in ~/.lldbinit or ~/.lldbinit-Xcode: apvt teardown (or apvt setup) removes it") }
             print("agent build: \(status.agentBuild ?? "not built yet")")
             return 0
         }

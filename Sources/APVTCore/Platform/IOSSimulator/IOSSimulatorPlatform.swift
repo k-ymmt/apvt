@@ -2,7 +2,7 @@ import APVTModel
 import Foundation
 
 /// The iOS Simulator: the agent gets into apps through the simulator's launchd environment
-/// (and Xcode's LLDB), answers on a unix socket under `/tmp`, and `simctl` takes screenshots.
+/// answers on a unix socket under `/tmp`, and `simctl` takes screenshots.
 public struct IOSSimulatorPlatform: Platform {
     public let id = "ios-simulator"
 
@@ -39,8 +39,8 @@ public struct IOSSimulatorPlatform: Platform {
             actions.append("enabled ApplicationAccessibilityEnabled on \(device.name) (SwiftUI accessibility identifiers need it)")
         }
 
-        if options.xcode {
-            actions.append(try XcodeLLDBHook.install(agentPath: products.agent.path))
+        if LegacyLLDBHook.isInstalled {
+            actions += try LegacyLLDBHook.uninstall()
         }
 
         var next: [String] = []
@@ -49,7 +49,8 @@ public struct IOSSimulatorPlatform: Platform {
         for app in running {
             next.append("xcrun simctl terminate \(device.udid) \(app.bundleId) && xcrun simctl launch \(device.udid) \(app.bundleId)   # running since before setup: relaunch to load the agent")
         }
-        next.append("launch or relaunch the app (simctl, Xcode Run\(options.xcode ? "" : " — add --xcode for apps Xcode runs under its debugger"), or the home screen)")
+        next.append("launch or relaunch the app with xcrun simctl launch (or from the home screen)")
+        next.append("note: an app Xcode Runs under its debugger usually gets no agent — Xcode passes its own DYLD_INSERT_LIBRARIES (Main Thread Checker), which replaces apvt's; relaunch it with xcrun simctl launch (the build Xcode installed is used)")
         next.append("apvt inspect   # issues on the current screen")
         next.append("note: the launchd setting lasts until the simulator shuts down; run apvt setup again after a reboot")
         return SetupReport(device: "\(device.name) (\(device.runtime), \(device.udid))", actions: actions, next: next)
@@ -74,12 +75,10 @@ public struct IOSSimulatorPlatform: Platform {
             }
             _ = try Simctl.spawn(device.udid, ["launchctl", "unsetenv", "APVT_AGENT_PATH"])
             actions.append("apps launched from now on run without the agent; running apps keep it until they quit")
-        } else if !options.xcode {
-            throw APVTError(.environment, "no booted simulator to tear down", fix: ["apvt teardown --xcode   # to remove only the Xcode hook"])
+        } else if !LegacyLLDBHook.isInstalled {
+            throw APVTError(.environment, "no booted simulator to tear down", fix: ["xcrun simctl list devices booted"])
         }
-        if options.xcode, let done = try XcodeLLDBHook.uninstall() {
-            actions.append(done)
-        }
+        actions += try LegacyLLDBHook.uninstall()
         return SetupReport(device: deviceName, actions: actions, next: [])
     }
 
@@ -103,7 +102,7 @@ public struct IOSSimulatorPlatform: Platform {
             devices.append(.init(name: device.name, udid: device.udid, runtime: device.runtime,
                                  setUp: env.contains("libapvt-loader"), agents: agents, appsWithoutAgent: running))
         }
-        return PlatformStatus(devices: devices, xcodeHook: XcodeLLDBHook.isInstalled, agentBuild: AgentBuilder.currentHash())
+        return PlatformStatus(devices: devices, oldLLDBHook: LegacyLLDBHook.isInstalled, agentBuild: AgentBuilder.currentHash())
     }
 
     // MARK: - Agents

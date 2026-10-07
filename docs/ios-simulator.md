@@ -116,3 +116,20 @@ verified with `assert`. What it hit, and what changed:
 - `xcrun simctl bootstatus <udid> -b` boots an iOS 27.0 device headless in ~6 s.
 - `simctl io <udid> screenshot` is at the screen scale (1206x2622 for 402x874pt).
 - The launchd environment lasts until the simulator shuts down.
+
+## Xcode's Run: not supported (measured, then dropped)
+
+The third real Xcode Run stopped at `breakpoint 1.1 2.1 3.1`, and the hook's log had no entry from
+Xcode at all. The project's `xcuserdata/…/xcdebugger/Breakpoints_v2.xcbkptlist` held three
+`UIApplicationMain` symbolic breakpoints, one more per Run, each with
+`continueAfterRunningActions = "No"` and no actions: **Xcode imports every breakpoint the
+debugger creates into its own breakpoint list, without the LLDB commands, script callbacks or
+auto-continue, and re-creates it from that list** — so any init-file breakpoint stops the app and
+never runs. Xcode's own user-global breakpoints (with a debugger-command action and auto-continue)
+or rewriting the process's `DYLD_INSERT_LIBRARIES` at the first stop were the remaining options;
+the user chose to leave Xcode's Run out. `apvt setup` / `teardown` remove hooks earlier versions
+installed; the imported breakpoints live in the project's Breakpoint navigator and are deleted
+there (or with the `xcbkptlist`, Xcode closed).
+
+What works with Xcode: build (and Run) from Xcode, stop, then `xcrun simctl launch <udid>
+<bundle-id>`; the installed build launches with the agent.
