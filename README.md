@@ -68,7 +68,7 @@ apvt launch-env            # env vars that make an Xcode-launched app load the a
 Xcode replaces launchd's `DYLD_INSERT_LIBRARIES`, so an app it launches has no agent. Give that
 launch the variables `apvt launch-env` prints instead — for example as the `environmentVariables`
 of Xcode MCP's `DeviceInteractionInstallAndRun` (`apvt launch-env --xcode` adds
-`"$(inherited)": ""` to keep the scheme's own), or in the scheme's Run > Environment Variables. The app then runs under Xcode, with its
+`"$(inherited)": ""` to keep the scheme's own; `--compact` prints it on one line for a shell wrapper), or in the scheme's Run > Environment Variables. The app then runs under Xcode, with its
 console and `GetConsoleOutput`, and answers apvt.
 
 ### Typing

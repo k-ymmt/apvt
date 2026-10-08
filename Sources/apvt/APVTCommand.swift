@@ -39,7 +39,7 @@ struct APVT: ParsableCommand {
         Right after launching an app, add --wait 10 so apvt waits for it.
         `apvt rules` lists what inspect checks and how to fix each.
         """,
-        version: "0.1.0",
+        version: "0.2.0",
         subcommands: [Setup.self, Teardown.self, Status.self, LaunchEnv.self, Inspect.self, Tree.self, Query.self, Assert.self,
                       Screenshot.self, TypeText.self, Rules.self, Debug.self]
     )
@@ -218,6 +218,8 @@ struct LaunchEnv: ParsableCommand {
     var device: String?
     @Flag(help: "Print KEY=value lines instead of JSON.")
     var shell = false
+    @Flag(help: "Print the JSON on one line, for calls made through a shell wrapper or a tool argument.")
+    var compact = false
     @Flag(help: ArgumentHelp("Add \"$(inherited)\": \"\" so the JSON can be passed as-is to Xcode MCP's DeviceInteractionInstallAndRun environmentVariables, keeping the scheme's own variables."))
     var xcode = false
 
@@ -227,6 +229,9 @@ struct LaunchEnv: ParsableCommand {
             if xcode { env["$(inherited)"] = "" }
             if shell {
                 env.keys.sorted().forEach { print("\($0)=\(env[$0]!)") }
+            } else if compact {
+                let data = try JSONSerialization.data(withJSONObject: env, options: [.sortedKeys, .withoutEscapingSlashes])
+                print(String(decoding: data, as: UTF8.self))
             } else {
                 printJSON(env)
             }
