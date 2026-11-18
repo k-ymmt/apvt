@@ -9,17 +9,38 @@ public struct Target: Sendable {
     public var snapshotFile: String?
     /// Seconds to wait for the app's agent to appear (right after launching it).
     public var wait: Double
+    /// `ios-simulator` or `macos`; nil: wherever the one answering app is.
+    public var platform: String?
+    /// macOS: the window to look at, by number or title; nil: the key window.
+    public var window: String?
 
-    public init(device: String?, app: String?, snapshotFile: String?, wait: Double = 0) {
+    public init(device: String?, app: String?, snapshotFile: String?, wait: Double = 0, platform: String? = nil, window: String? = nil) {
         self.device = device
         self.app = app
         self.snapshotFile = snapshotFile
         self.wait = wait
+        self.platform = platform
+        self.window = window
+    }
+}
+
+/// A running app's agent and the platform that talks to it.
+public struct Connection: Sendable {
+    public var platform: any Platform
+    public var agent: RunningAgent
+
+    public func snapshot(window: String?) throws -> Snapshot {
+        do {
+            return try platform.snapshot(of: agent, window: window)
+        } catch var error as APVTError {
+            error.message = "\(agent.title): \(error.message.replacingOccurrences(of: "the agent refused snapshot: ", with: ""))"
+            throw error
+        }
     }
 }
 
 public enum Session {
-    public static let platforms: [any Platform] = [IOSSimulatorPlatform()]
+    public static let platforms: [any Platform] = [IOSSimulatorPlatform(), MacOSPlatform()]
 
     public static func platform(_ id: String) throws -> any Platform {
         guard let platform = platforms.first(where: { $0.id == id }) else {
@@ -28,17 +49,36 @@ public enum Session {
         return platform
     }
 
-    /// The one app the command is about: named by --app, or the only one whose agent answers.
-    /// With --wait, waits for it to appear and to have run for a moment (its first screen built).
-    public static func agent(_ platform: any Platform, _ target: Target) throws -> RunningAgent {
+    /// The platforms a target can be on: the named one; the simulator's when a device is named;
+    /// else all of them.
+    static func candidates(_ target: Target) throws -> [any Platform] {
+        if let id = target.platform { return [try platform(id)] }
+        if target.device != nil { return [try platform(Snapshot.iOSSimulator)] }
+        return platforms
+    }
+
+    /// The one app the command is about: named by --app, or the only one whose agent answers,
+    /// on whichever platform it runs. With --wait, waits for it to appear and to have run for
+    /// a moment (its first screen built).
+    public static func connect(_ target: Target) throws -> Connection {
+        let searched = try candidates(target)
         let deadline = Date().addingTimeInterval(target.wait)
         while true {
-            let agents = try platform.agents(device: target.device)
-            let candidates = target.app.map { app in agents.filter { $0.bundleId == app || $0.name == app } } ?? agents
+            var found: [Connection] = []
+            for platform in searched {
+                let agents: [RunningAgent]
+                // Searching everywhere, a platform that cannot even look (no simulator runtime
+                // installed) has no agents; asked for by name, its error is the answer.
+                if searched.count == 1 { agents = try platform.agents(device: target.device) } else { agents = (try? platform.agents(device: target.device)) ?? [] }
+                found += agents.map { Connection(platform: platform, agent: $0) }
+            }
+            let candidates = target.app.map { app in
+                found.filter { $0.agent.bundleId == app || $0.agent.name == app || String($0.agent.pid) == app }
+            } ?? found
             // Ping together: each suspended app costs the whole timeout.
             nonisolated(unsafe) var answers = [Bool](repeating: false, count: candidates.count)
             DispatchQueue.concurrentPerform(iterations: candidates.count) { i in
-                let ok = platform.ping(candidates[i], timeout: 2)
+                let ok = candidates[i].platform.ping(candidates[i].agent, timeout: 2)
                 answers[i] = ok
             }
             let answering = candidates.indices.filter { answers[$0] }.map { candidates[$0] }
@@ -46,7 +86,7 @@ public enum Session {
             case 1:
                 // A just-launched app is still building its first screen.
                 if target.wait > 0 {
-                    let remaining = 1.5 - Date().timeIntervalSince(answering[0].startedAt)
+                    let remaining = 1.5 - Date().timeIntervalSince(answering[0].agent.startedAt)
                     if remaining > 0 { Thread.sleep(forTimeInterval: remaining) }
                 }
                 return answering[0]
@@ -56,53 +96,59 @@ public enum Session {
                     Thread.sleep(forTimeInterval: 0.5)
                     continue
                 }
-                if candidates.isEmpty { throw try notRunning(platform, target, app: target.app) }
-                let names = candidates.map(\.title).joined(separator: ", ")
-                throw APVTError(.agent, "\(names) did not answer within 2s",
-                                why: "an app in the background is suspended by iOS (only the foreground app answers), or it is paused at a breakpoint.",
-                                fix: candidates.map { "xcrun simctl launch \($0.deviceUDID ?? "booted") \($0.bundleId)   # brings it to the foreground" }
-                                    + ["resume the app in Xcode if it is stopped at a breakpoint",
-                                       "--wait 10   # if the app was just launched"])
+                if candidates.isEmpty { throw try notRunning(searched, target) }
+                let names = candidates.map(\.agent.title).joined(separator: ", ")
+                var why: [String] = []
+                var fix: [String] = []
+                for platform in searched {
+                    let silent = candidates.filter { $0.platform.id == platform.id }.map(\.agent)
+                    guard !silent.isEmpty else { continue }
+                    let explanation = platform.explainSilence(of: silent)
+                    if let reason = explanation.why { why.append(reason) }
+                    fix += explanation.fix.filter { !fix.contains($0) }
+                }
+                throw APVTError(.agent, "\(names) did not answer within 2s", why: why.joined(separator: " "), fix: fix)
             default:
                 throw APVTError(.usage, "\(answering.count) apps with the agent are answering; say which one",
-                                fix: answering.map { "--app \($0.bundleId)   # \($0.name), pid \($0.pid), \($0.deviceName ?? "")" })
+                                fix: answering.map { c in
+                                    let a = c.agent
+                                    let sameId = answering.filter { $0.agent.bundleId == a.bundleId }
+                                    var option = "--app \(a.bundleId)"
+                                    if sameId.count > 1 {
+                                        // The same app on two platforms, or two instances of it.
+                                        option = sameId.filter { $0.platform.id == c.platform.id }.count > 1 ? "--app \(a.pid)" : "--app \(a.bundleId) --platform \(c.platform.id)"
+                                    }
+                                    return "\(option)   # \(a.name), pid \(a.pid), \(a.place)"
+                                })
             }
         }
     }
 
-    private static func notRunning(_ platform: any Platform, _ target: Target, app: String?) throws -> APVTError {
-        let status = try platform.status(device: target.device)
-        guard !status.devices.isEmpty else {
-            _ = try Simctl.resolveBooted(target.device) // throws the "nothing booted" error with its fix
-            return APVTError(.environment, "no booted simulator")
+    private static func notRunning(_ searched: [any Platform], _ target: Target) throws -> APVTError {
+        let what = target.app.map { "\($0) is not running with the agent" } ?? "no app with the apvt agent is running"
+        if searched.count == 1 {
+            let explanation = try searched[0].explainNoAgent(app: target.app, device: target.device)
+            return APVTError(.environment, what, why: explanation.why, fix: explanation.fix + ["apvt status   # shows setup, running apps and their agents"])
         }
-        let what = app.map { "\($0) is not running with the agent" } ?? "no app with the apvt agent is running"
+        // Looked everywhere: every platform says how an app gets the agent there.
+        var why: [String] = []
         var fix: [String] = []
-        var why: String?
-        for device in status.devices {
-            if !device.setUp {
-                why = "apvt setup has not been run on \(device.name) since it booted, so apps do not load the agent."
-                fix.append("apvt setup --device \(device.udid)   # then relaunch the app")
-                continue
-            }
-            let candidates = device.appsWithoutAgent.filter { app == nil || $0 == app }
-            if !candidates.isEmpty {
-                why = "the app was launched before apvt setup, or by Xcode's Run: Xcode passes its own DYLD_INSERT_LIBRARIES (Main Thread Checker), which replaces apvt's, so the app has no agent."
-                for bundle in candidates {
-                    fix.append("xcrun simctl terminate \(device.udid) \(bundle) && xcrun simctl launch \(device.udid) \(bundle)")
-                }
-                fix.append("from Xcode: stop the Run, then relaunch with the command above")
-            } else {
-                why = why ?? "the app is not running on \(device.name)."
-                fix.append("xcrun simctl launch \(device.udid) \(app ?? "<bundle-id>")   # installs nothing: build/install it first (xcodebuild, or Xcode Run then this)")
+        for platform in searched {
+            do {
+                let explanation = try platform.explainNoAgent(app: target.app, device: target.device)
+                if let reason = explanation.why { why.append(reason) }
+                fix += explanation.fix
+            } catch let error as APVTError {
+                // "no simulator is booted": a fact about that platform, not the failure.
+                why.append("\(platform.id): \(error.message).")
+                fix += error.fix.map { "\($0)   # \(platform.id)" }.prefix(1)
             }
         }
-        fix.append("apvt status   # shows setup, running apps and their agents")
-        return APVTError(.environment, what, why: why, fix: fix)
+        return APVTError(.environment, what, why: why.joined(separator: " "), fix: fix + ["apvt status   # shows setup, running apps and their agents"])
     }
 
     /// A fresh snapshot from the app, or a saved one.
-    public static func snapshot(_ platform: any Platform, _ target: Target) throws -> (IndexedSnapshot, RunningAgent?) {
+    public static func snapshot(_ target: Target) throws -> (IndexedSnapshot, Connection?) {
         if let file = target.snapshotFile {
             let data: Data
             do { data = try Data(contentsOf: URL(fileURLWithPath: file)) } catch {
@@ -114,13 +160,8 @@ public enum Session {
                 throw APVTError(.io, "\(file) is not an apvt snapshot", why: "\(error)", fix: ["apvt inspect --save \(file)   # writes one"])
             }
         }
-        let agent = try Session.agent(platform, target)
-        do {
-            return (IndexedSnapshot(try platform.snapshot(of: agent)), agent)
-        } catch var error as APVTError {
-            error.message = "\(agent.title): \(error.message)"
-            throw error
-        }
+        let connection = try connect(target)
+        return (IndexedSnapshot(try connection.snapshot(window: target.window)), connection)
     }
 
     public static func save(_ snapshot: Snapshot, to path: String) throws {
@@ -136,17 +177,17 @@ public enum Session {
 
 extension Session {
     /// Types into whatever has keyboard focus in the app (`apvt type`).
-    public static func type(_ platform: any Platform, _ target: Target, text: String, replace: Bool, submit: Bool) throws -> (AgentTypeResponse, RunningAgent) {
-        let agent = try Session.agent(platform, target)
+    public static func type(_ target: Target, text: String, replace: Bool, submit: Bool) throws -> (AgentTypeResponse, RunningAgent) {
+        let connection = try connect(target)
+        let (platform, agent) = (connection.platform, connection.agent)
         let data: Data
         do {
-            data = try platform.rawRequest(AgentRequest(cmd: "type", text: text, replace: replace, submit: submit), to: agent)
+            data = try platform.rawRequest(AgentRequest(cmd: "type", text: text, replace: replace, submit: submit, window: target.window), to: agent)
         } catch var error as APVTError {
             // The agent answers ok:false when nothing has focus; say what to do about it.
             error.message = "\(agent.title): \(error.message.replacingOccurrences(of: "the agent refused type: ", with: ""))"
             if error.fix.isEmpty {
-                error.fix = ["tap the text field first (its hitPoint in the simulator's hierarchy, or the center of `apvt query <selector>`), then apvt type again",
-                             "apvt setup --rebuild   # if the agent says unknown cmd type: it predates apvt type; then relaunch the app"]
+                error.fix = [platform.focusAdvice, platform.rebuildAdvice + "   # if the agent says unknown cmd type"]
             }
             throw error
         }
@@ -155,32 +196,61 @@ extension Session {
             if !platform.ping(agent, timeout: 2) {
                 throw APVTError(.agent, "\(agent.title) stopped answering while typing",
                                 why: "the app most likely crashed or froze in code that the text or Return triggered (an .onSubmit, a delegate, a binding).",
-                                fix: ["capture the screen (Xcode MCP DeviceInteractionSynthesize: applicationState Crashed, SpringBoard in front) and read the console for the reason",
+                                fix: ["look at the app (a screenshot, Xcode's console or the crash log) for the reason",
                                       "apvt status   # the app is gone from the list if it crashed"])
             }
             let message = (try? JSONDecoder().decode(AgentErrorResponse.self, from: data))?.error ?? String(decoding: data, as: UTF8.self)
-            throw APVTError(.agent, "\(agent.title): the agent did not type", why: message,
-                            fix: ["apvt setup --rebuild   # the running agent may be older than this apvt; then relaunch the app"])
+            throw APVTError(.agent, "\(agent.title): the agent did not type", why: message, fix: [platform.rebuildAdvice])
         }
         guard response.ok else {
             throw APVTError(.agent, "\(agent.title): \(response.error ?? "typing failed")",
-                            why: response.focused.map { "focused: \($0)" },
-                            fix: ["tap the text field (its hitPoint in the hierarchy, or the center of `apvt query <selector>`), then apvt type again"])
+                            why: response.focused.map { "focused: \($0)" }, fix: [platform.focusAdvice])
         }
         return (response, agent)
     }
 
-    /// Environment that makes an app launched by someone else (Xcode's Run, Xcode MCP
-    /// `DeviceInteractionInstallAndRun`, a scheme) load the agent, without `apvt setup`'s launchd change.
-    public static func launchEnvironment(device: String?) throws -> [String: String] {
-        let products = try AgentBuilder.ensure()
-        if let device = try? Simctl.resolveBooted(device) {
-            // SwiftUI accessibility identifiers need it; read at app launch (see setup).
-            _ = try? Simctl.spawn(device.udid, ["defaults", "write", "com.apple.Accessibility", "ApplicationAccessibilityEnabled", "-bool", "true"])
+    /// The platform an app reference belongs to: a `.app` says it in its Info.plist; anything
+    /// else is the bundle id of an app installed on a simulator.
+    static func platform(forApp app: String, named: String?) throws -> any Platform {
+        if let named { return try platform(named) }
+        guard AppBundle.looksLikePath(app) else { return try platform(Snapshot.iOSSimulator) }
+        let bundle = try AppBundle(path: app)
+        switch bundle.platform {
+        case .macOS: return try platform(Snapshot.macOS)
+        case .iOSSimulator: return try platform(Snapshot.iOSSimulator)
+        case .iOSDevice:
+            throw APVTError(.usage, "\(bundle.url.lastPathComponent) cannot be launched by apvt", why: bundle.platformDescription,
+                            fix: ["build it for the simulator: xcodebuild … -destination 'platform=iOS Simulator,name=<device>' build"])
+        case .macCatalyst, .other:
+            throw APVTError(.usage, "\(bundle.url.lastPathComponent) cannot be launched by apvt", why: bundle.platformDescription)
         }
-        return [
-            "DYLD_INSERT_LIBRARIES": products.agent.path,
-            "APVT_LOADED_BY": "env",
-        ]
+    }
+
+    /// Starts (or restarts) an app with the agent and waits for it to answer (`apvt launch`).
+    public static func launch(_ options: LaunchOptions, platform named: String? = nil) throws -> LaunchReport {
+        try platform(forApp: options.app, named: named).launch(options)
+    }
+
+    /// Environment that makes an app launched by someone else (Xcode's Run, Xcode MCP, a scheme)
+    /// load the agent. `app`: a macOS `.app`; nil: the iOS Simulator.
+    public static func launchEnvironment(app: String?, device: String?, identity: String? = nil) throws -> [String: String] {
+        guard let app else {
+            return try platform(Snapshot.iOSSimulator).launchEnvironment(LaunchOptions(app: "", device: device))
+        }
+        let platform = try platform(forApp: app, named: nil)
+        return try platform.launchEnvironment(LaunchOptions(app: app, device: device, identity: identity))
+    }
+
+    public static func launchEnvironment(device: String?) throws -> [String: String] {
+        try launchEnvironment(app: nil, device: device)
+    }
+
+    /// Booted simulators and their agents, and the macOS apps that have one.
+    public static func status(device: String?) throws -> PlatformStatus {
+        var status = try platform(Snapshot.iOSSimulator).status(device: device)
+        if device == nil {
+            status.agents = try platform(Snapshot.macOS).agents(device: nil)
+        }
+        return status
     }
 }

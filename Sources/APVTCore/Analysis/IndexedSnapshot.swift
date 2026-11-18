@@ -13,12 +13,15 @@ public struct IndexedSnapshot: Sendable {
         public var depth: Int
         public var childRefs: [Int]
         /// The visible area left after clipping ancestors that are not scroll views and do
-        /// not cover the whole screen (those are the screen's job). nil = not clipped.
+        /// not cover the whole screen or window (those are the screen's job). nil = not clipped.
         public var clipRect: Rect?
         /// The nearest clipping ancestor that produced `clipRect`.
         public var clipper: Int?
         /// The nearest ancestor that scrolls (a UIScrollView that is not a text view).
         public var scrollAncestor: Int?
+        /// What the scrolling ancestors show of their content: the intersection of their frames.
+        /// nil = not inside a scroll view.
+        public var viewport: Rect?
         /// Hidden, or fully transparent, itself or through an ancestor.
         public var hidden: Bool
         /// System chrome (bars, keyboard) or a framework's private view.
@@ -33,6 +36,12 @@ public struct IndexedSnapshot: Sendable {
             guard let clipRect else { return node.frame }
             return node.frame.intersection(clipRect)
         }
+        /// The part on show right now: `visibleFrame` without what is scrolled out of view.
+        public var drawnFrame: Rect? {
+            guard let visible = visibleFrame else { return nil }
+            guard let viewport else { return visible }
+            return visible.intersection(viewport)
+        }
     }
 
     public var snapshot: Snapshot
@@ -44,18 +53,18 @@ public struct IndexedSnapshot: Sendable {
         var counter = 0
         let screen = snapshot.screen.bounds
 
-        func visit(_ node: inout Node, parent: Int?, ancestors: [Int], clip: Rect?, clipper: Int?, scroll: Int?,
+        func visit(_ node: inout Node, parent: Int?, ancestors: [Int], clip: Rect?, clipper: Int?, scroll: Int?, viewport: Rect?,
                    hidden: Bool, system: Bool, internalFlag: Bool, control: Int?) {
             counter += 1
             let ref = counter
             node.ref = ref
             let isHidden = hidden || node.has("hidden") || (node.alpha ?? 1) < 0.01
             let isSystem = system || node.has("system")
-            // A private UIKit view hides its UIKit insides, not the SwiftUI content it hosts
-            // (SwiftUI lists live in private collection view cells).
-            let isInternal = node.has("internal") || (internalFlag && node.source == .uikit)
+            // A private UIKit / AppKit view hides its native insides, not the SwiftUI content it
+            // hosts (SwiftUI lists live in private collection view cells).
+            let isInternal = node.has("internal") || (internalFlag && node.source.isNative)
             var entry = Entry(ref: ref, node: node, parent: parent, ancestors: ancestors, depth: ancestors.count,
-                              childRefs: [], clipRect: clip, clipper: clipper, scrollAncestor: scroll, hidden: isHidden,
+                              childRefs: [], clipRect: clip, clipper: clipper, scrollAncestor: scroll, viewport: viewport, hidden: isHidden,
                               system: isSystem, internal: isInternal, controlAncestor: control)
             entry.node.children = []
             let index = entries.count
@@ -67,8 +76,10 @@ public struct IndexedSnapshot: Sendable {
             var childClipper = clipper
             var childScroll = scroll
             let scrolls = node.scroll != nil
+            var childViewport = viewport
             if scrolls {
                 childScroll = ref
+                childViewport = viewport.map { $0.intersection(node.frame) ?? .zero } ?? node.frame
             } else if node.has("clips"), !node.frame.contains(screen, tolerance: 1) {
                 childClip = clip.flatMap { $0.intersection(node.frame) } ?? (clip == nil ? node.frame : Rect.zero)
                 childClipper = ref
@@ -76,12 +87,12 @@ public struct IndexedSnapshot: Sendable {
             let childControl = node.role == .control ? ref : control
             for i in node.children.indices {
                 visit(&node.children[i], parent: ref, ancestors: ancestors + [ref], clip: childClip, clipper: childClipper,
-                      scroll: childScroll, hidden: isHidden, system: isSystem, internalFlag: isInternal, control: childControl)
+                      scroll: childScroll, viewport: childViewport, hidden: isHidden, system: isSystem, internalFlag: isInternal, control: childControl)
             }
             entries[index].node.ref = ref
         }
         for i in numbered.windows.indices {
-            visit(&numbered.windows[i], parent: nil, ancestors: [], clip: nil, clipper: nil, scroll: nil,
+            visit(&numbered.windows[i], parent: nil, ancestors: [], clip: nil, clipper: nil, scroll: nil, viewport: nil,
                   hidden: false, system: false, internalFlag: false, control: nil)
         }
         self.snapshot = numbered

@@ -23,6 +23,20 @@ enum Fixture {
     static func issues(_ screen: String) throws -> [Issue] {
         Analyzer().analyze(try snapshot(screen))
     }
+
+    /// Fixtures of Examples/APVTMacSample, recorded on macOS 27.0:
+    ///
+    ///     apvt launch path/to/APVTMacSample.app -- -screen <name>
+    ///     apvt inspect --save Tests/APVTCoreTests/Fixtures/mac-sample-<name>.json
+    static func macSnapshot(_ screen: String) throws -> IndexedSnapshot {
+        let data = try Data(contentsOf: url("mac-sample-\(screen)"))
+        return IndexedSnapshot(try JSONDecoder().decode(Snapshot.self, from: data))
+    }
+
+    static func macIssues(_ screen: String) throws -> [Issue] {
+        let snapshot = try macSnapshot(screen)
+        return Analyzer(for: snapshot.snapshot).analyze(snapshot)
+    }
 }
 
 extension Array where Element == Issue {

@@ -9,7 +9,7 @@ public struct AssertionSpec: Sendable {
 
         public init(_ string: String) throws {
             switch string {
-            case "screen": self = .screen
+            case "screen", "window": self = .screen
             case "safe-area", "safearea", "safe": self = .safeArea
             default: self = .node(try NodeSelector(string))
             }
@@ -118,7 +118,7 @@ public enum Assertions {
         let screen = s.snapshot.screen
         func resolve(_ reference: AssertionSpec.Reference) throws -> (String, Rect, Int?) {
             switch reference {
-            case .screen: return ("screen", screen.bounds, nil)
+            case .screen: return (s.snapshot.surfaceName, screen.bounds, nil)
             case .safeArea: return ("safe-area", screen.safeBounds, nil)
             case .node(let sel):
                 let found = sel.select(in: s, includeSystem: true)
@@ -145,12 +145,12 @@ public enum Assertions {
                 if e.hidden { problems.append("hidden (itself or an ancestor: isHidden / alpha 0)") }
                 if f.isEmpty { problems.append("zero size") }
                 if e.scrollAncestor == nil, !screen.bounds.contains(f, tolerance: t) {
-                    problems.append(screen.bounds.intersection(f) == nil ? "outside the screen" : "partly outside the screen")
+                    problems.append(screen.bounds.intersection(f) == nil ? "outside the \(s.snapshot.surfaceName)" : "partly outside the \(s.snapshot.surfaceName)")
                 }
                 if let clip = e.clipRect, !clip.contains(f, tolerance: 1) {
                     problems.append("clipped by @\(e.clipper ?? 0)")
                 }
-                add("visible", problems.isEmpty, problems.isEmpty ? "\(Describe.frame(f)) on screen" : "\(Describe.frame(f)): " + problems.joined(separator: ", "))
+                add("visible", problems.isEmpty, problems.isEmpty ? "\(Describe.frame(f)) \(s.snapshot.platform == Snapshot.macOS ? "in the window" : "on screen")" : "\(Describe.frame(f)): " + problems.joined(separator: ", "))
             }
             for reference in spec.inside {
                 let (refName, r, _) = try resolve(reference)

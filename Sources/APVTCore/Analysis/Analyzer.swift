@@ -9,13 +9,19 @@ public struct Analyzer: Sendable {
 
     public init() {}
 
+    /// The rules that have something to check on the snapshot's platform.
+    public init(for snapshot: Snapshot) {
+        rules = Rule.defaults(for: snapshot.platform)
+    }
+
     public func analyze(_ s: IndexedSnapshot) -> [Issue] {
         var issues: [Issue] = []
         let screen = s.snapshot.screen
         let content = s.entries.filter { isContent($0) }
 
-        if rules.contains(.widerThanScreen) { issues += widerThanScreen(s, screen) }
-        if rules.contains(.offscreen) { issues += offscreen(content, screen) }
+        let surface = s.snapshot.surfaceName
+        if rules.contains(.widerThanScreen) { issues += widerThanScreen(s, screen, surface) }
+        if rules.contains(.offscreen) { issues += offscreen(content, screen, surface) }
         if rules.contains(.clipped) { issues += clipped(s, content) }
         var squeezedRefs = Set<Int>()
         if rules.contains(.squeezed) {
@@ -26,7 +32,7 @@ public struct Analyzer: Sendable {
         if rules.contains(.truncated) { issues += truncated(content, skip: squeezedRefs) }
         if rules.contains(.overlap) { issues += overlap(s, content) }
         if rules.contains(.unsafeArea) { issues += unsafeArea(content, screen) }
-        if rules.contains(.smallTarget) { issues += smallTargets(content, skip: squeezedRefs) }
+        if rules.contains(.smallTarget) { issues += smallTargets(content, skip: squeezedRefs, pointer: s.snapshot.platform == Snapshot.macOS) }
         if rules.contains(.ambiguousLayout) {
             for e in s.entries where e.node.has("ambiguousLayout") && e.isAppContent {
                 issues.append(Issue(rule: .ambiguousLayout, severity: .warning, ref: e.ref,
@@ -64,7 +70,7 @@ public struct Analyzer: Sendable {
 
     // MARK: - Rules
 
-    private func offscreen(_ content: [IndexedSnapshot.Entry], _ screen: ScreenInfo) -> [Issue] {
+    private func offscreen(_ content: [IndexedSnapshot.Entry], _ screen: ScreenInfo, _ surface: String) -> [Issue] {
         var issues: [Issue] = []
         var flagged = Set<Int>()
         let bounds = screen.bounds
@@ -74,7 +80,7 @@ public struct Analyzer: Sendable {
             flagged.insert(e.ref)
             guard bounds.intersection(e.frame) != nil else {
                 issues.append(Issue(rule: .offscreen, severity: .warning, ref: e.ref,
-                                    message: "\(Describe.node(e)) \(Describe.frame(e.frame)) is entirely outside the \(Describe.number(screen.width))x\(Describe.number(screen.height))pt screen",
+                                    message: "\(Describe.node(e)) \(Describe.frame(e.frame)) is entirely outside the \(Describe.number(screen.width))x\(Describe.number(screen.height))pt \(surface)",
                                     frame: e.frame))
                 continue
             }
@@ -90,7 +96,7 @@ public struct Analyzer: Sendable {
         return issues
     }
 
-    private func widerThanScreen(_ s: IndexedSnapshot, _ screen: ScreenInfo) -> [Issue] {
+    private func widerThanScreen(_ s: IndexedSnapshot, _ screen: ScreenInfo, _ surface: String) -> [Issue] {
         var issues: [Issue] = []
         var reported = Set<Int>()
         for e in s.entries where e.isAppContent && e.scrollAncestor == nil && e.node.role != .window {
@@ -103,7 +109,7 @@ public struct Analyzer: Sendable {
             guard !overflowing.isEmpty, !isContent(e) else { continue }
             reported.insert(e.ref)
             let suspects = self.suspects(in: descendants + s.descendants(of: e.ref).filter { !isContent($0) }, screen)
-            var message = "\(Describe.node(e)) \(Describe.frame(e.frame)) is \(Describe.number(e.frame.width))pt wide; the screen is \(Describe.number(screen.width))pt"
+            var message = "\(Describe.node(e)) \(Describe.frame(e.frame)) is \(Describe.number(e.frame.width))pt wide; the \(surface) is \(Describe.number(screen.width))pt"
             if !overflowing.isEmpty { message += "; \(overflowing.count) visible element(s) end up past the edge" }
             if !suspects.isEmpty {
                 message += ". Fixed-size children: " + suspects.map { suspect in
@@ -129,7 +135,7 @@ public struct Analyzer: Sendable {
             let fixedWidth = (n.type == ".frame" && (n.detail?.contains("width:") ?? false))
                 || (n.modifiers ?? []).contains { $0.hasPrefix("frame(") && $0.contains("width:") && !$0.contains("maxWidth") }
             if fixedWidth, e.frame.width >= screen.width * 0.25 { suspect = true }
-            if n.source == .uikit, isContent(e), e.frame.width > screen.width + 0.5 { suspect = true }
+            if n.source.isNative, isContent(e), e.frame.width > screen.width + 0.5 { suspect = true }
             if !suspect { continue }
             seen.insert(e.ref)
             // The .fixedSize wrapper and its Text are one suspect.
@@ -175,6 +181,12 @@ public struct Analyzer: Sendable {
             let inside = e.controlAncestor.map { " (inside \(Describe.node(s[$0])))" } ?? ""
             // 0x0 is not drawn at all (SwiftUI keeps such Texts for accessibility); a zero width
             // with height is a text stood on end, one character per line.
+            // An icon-only label: SwiftUI keeps the title below at 0x0 for accessibility and
+            // draws the icon; the title this node owns was never meant to fit.
+            if e.node.has("textNotLaidOut"), let title = e.node.text?.string,
+               s.descendants(of: e.ref).contains(where: { $0.node.text?.string == title && $0.frame.isEmpty }) {
+                continue
+            }
             if let text = e.node.text, let word = text.longestWordWidth, word > 0, e.frame.width + 1 < word,
                e.frame.height >= (text.lineHeight ?? 1) * 0.5,
                e.node.source == .swiftui || (text.maxLines ?? 1) != 1 {
@@ -200,7 +212,9 @@ public struct Analyzer: Sendable {
             guard let t = e.node.text, !t.string.isEmpty, !e.node.has("textNotLaidOut"),
                   let lineHeight = t.lineHeight, lineHeight > 0, let required = t.requiredHeight, let single = t.singleLineWidth else { continue }
             // Text fields and text views scroll their text; shrink-to-fit labels shrink it.
-            if e.node.type.contains("TextField") || e.node.type.contains("TextView") || e.node.has("shrinksToFit") { continue }
+            // (An AppKit label is an NSTextField that only shows text: that one is checked.)
+            let appKitLabel = e.node.source == .appkit && e.node.role == .text && !e.node.type.contains("TextView")
+            if (e.node.type.contains("TextField") && !appKitLabel) || e.node.type.contains("TextView") || e.node.has("shrinksToFit") { continue }
             let w = e.frame.width, h = e.frame.height
             let guessed = t.fontGuessed == true ? " (font guessed from the frame)" : ""
             let severity: Severity = t.fontGuessed == true ? .warning : .error
@@ -224,16 +238,18 @@ public struct Analyzer: Sendable {
     }
 
     private func overlap(_ s: IndexedSnapshot, _ content: [IndexedSnapshot.Entry]) -> [Issue] {
-        // What is drawn: the part left after clipping; nothing for fully clipped views.
-        let candidates = content.filter { isTextOrControl($0) && $0.controlAncestor == nil && ($0.visibleFrame?.area ?? 0) > 1 }
+        // What is drawn: the part left after clipping and scrolling; nothing for views that are
+        // fully clipped or scrolled out of view.
+        let candidates = content.filter { isTextOrControl($0) && $0.controlAncestor == nil && ($0.drawnFrame?.area ?? 0) > 1 }
         var issues: [Issue] = []
         for (i, a) in candidates.enumerated() {
             for b in candidates[(i + 1)...] {
                 guard a.ancestors.first == b.ancestors.first, !s.isAncestor(a.ref, of: b.ref), !s.isAncestor(b.ref, of: a.ref),
-                      let va = a.visibleFrame, let vb = b.visibleFrame,
+                      let va = a.drawnFrame, let vb = b.drawnFrame,
                       let shared = va.intersection(vb), shared.width > 1, shared.height > 1 else { continue }
-                // A SwiftUI control and the UIKit view it hosts (TextField → UITextField) are one.
-                if a.node.source != b.node.source, sameFrame(a.frame, b.frame) { continue }
+                // A SwiftUI control and the native view it hosts (TextField → UITextField,
+                // TextEditor → the NSTextView inside its scroll view) are one.
+                if a.node.source != b.node.source, sameFrame(a.frame, b.frame) || hosts(a, b) || hosts(b, a) { continue }
                 // A text owner and the text it owns describe the same thing.
                 if a.node.has("textNotLaidOut") || b.node.has("textNotLaidOut") { continue }
                 // Text drawn across a control's edge is a mistake; text placed wholly inside a
@@ -268,7 +284,7 @@ public struct Analyzer: Sendable {
         return issues
     }
 
-    private func smallTargets(_ content: [IndexedSnapshot.Entry], skip: Set<Int>) -> [Issue] {
+    private func smallTargets(_ content: [IndexedSnapshot.Entry], skip: Set<Int>, pointer: Bool) -> [Issue] {
         var issues: [Issue] = []
         // Text fields are left out: in a Form or List the whole row focuses them.
         for e in content where e.node.role == .control && !skip.contains(e.ref) && !e.node.has("disabled")
@@ -276,7 +292,7 @@ public struct Analyzer: Sendable {
             let w = e.frame.width, h = e.frame.height
             guard w >= 1, h >= 1, min(w, h) < minimumTarget else { continue }
             issues.append(Issue(rule: .smallTarget, severity: .warning, ref: e.ref,
-                                message: "\(Describe.node(e)) \(Describe.frame(e.frame)) is \(Describe.number(w))x\(Describe.number(h))pt; tappable areas should be at least \(Describe.number(minimumTarget))x\(Describe.number(minimumTarget))pt (44x44 recommended)",
+                                message: "\(Describe.node(e)) \(Describe.frame(e.frame)) is \(Describe.number(w))x\(Describe.number(h))pt; \(pointer ? "clickable" : "tappable") areas should be at least \(Describe.number(minimumTarget))x\(Describe.number(minimumTarget))pt\(pointer ? "" : " (44x44 recommended)")",
                                 frame: e.frame))
         }
         return issues
@@ -297,10 +313,16 @@ public struct Analyzer: Sendable {
             }
             let others = b.conflicting.map(Describe.constraint).filter { $0 != broken }
             issues.append(Issue(rule: .brokenConstraint, severity: .error, ref: ref,
-                                message: "UIKit broke \(broken) (views: \(b.views.joined(separator: ", "))); it conflicts with \(others.joined(separator: "; "))",
+                                message: "\(s.snapshot.layoutFramework) broke \(broken) (views: \(b.views.joined(separator: ", "))); it conflicts with \(others.joined(separator: "; "))",
                                 frame: ref.map { s[$0].frame }))
         }
         return issues
+    }
+
+    /// `control` is a SwiftUI control and `view` a native view drawn inside it.
+    private func hosts(_ control: IndexedSnapshot.Entry, _ view: IndexedSnapshot.Entry) -> Bool {
+        control.node.source == .swiftui && control.node.role == .control && view.node.source.isNative
+            && control.frame.contains(view.frame, tolerance: 1)
     }
 
     private func sameFrame(_ a: Rect, _ b: Rect) -> Bool {

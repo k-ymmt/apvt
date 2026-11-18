@@ -37,6 +37,76 @@ struct AnalyzerTests {
         "feed": [],
     ]
 
+    /// The same for Examples/APVTMacSample: judged against the window, with macOS's rules.
+    static let macExpected: [String: [(Rule, String)]] = [
+        "profile": [
+            (.widerThanScreen, "@9 .padding"),
+            (.offscreen, "@14 Circle"),
+            (.offscreen, "@19 Button #follow"),
+            (.squeezed, "@22 HStack \"Follow\""),
+            (.offscreen, "@27 RoundedRectangle"),
+            (.offscreen, "@28 Text \"Recent posts\""),
+        ],
+        "pricing": [
+            (.widerThanScreen, "@9 .padding"),
+            (.offscreen, "@18 RoundedRectangle.stroke"),
+            (.offscreen, "@32 RoundedRectangle.stroke"),
+        ],
+        "badge": [
+            (.truncated, "@17 Text #description"),
+            (.overlap, "@12 Text \"Inbox messages\""),
+        ],
+        "header": [(.truncated, "@11 Text #header-title")],
+        "form": [(.squeezed, "@14 Text #hint")],
+        "appkit": [
+            (.offscreen, "@12 NSTextField #appkit-title"),
+            (.truncated, "@14 NSTextField #appkit-subtitle"),
+            (.clipped, "@19 NSTextField #appkit-footer"),
+            (.brokenConstraint, "AppKit broke <NSButton.width == 200"),
+            (.overlap, "@21 NSButton #appkit-manage"),
+        ],
+        "settings": [],
+        "feed": [],
+    ]
+
+    @Test(arguments: ["profile", "pricing", "badge", "header", "form", "appkit", "settings", "feed"])
+    func findsWhatTheMacScreenPlants(screen: String) throws {
+        let issues = try Fixture.macIssues(screen)
+        let expected = Self.macExpected[screen]!
+        #expect(issues.count == expected.count, "\(issues.summary)")
+        for (rule, prefix) in expected {
+            #expect(issues.contains { $0.rule == rule && $0.message.hasPrefix(prefix) }, "missing \(rule.rawValue) \(prefix) in \(issues.summary)")
+        }
+    }
+
+    /// A window has no status bar and a pointer needs no 44pt target: both rules are off on
+    /// macOS, and what is cut off is cut off by the window.
+    @Test func macOSJudgesAgainstTheWindow() throws {
+        #expect(!Rule.defaults(for: Snapshot.macOS).contains(.unsafeArea))
+        #expect(!Rule.defaults(for: Snapshot.macOS).contains(.smallTarget))
+        #expect(Rule.defaults(for: Snapshot.iOSSimulator) == Set(Rule.allCases))
+        let issues = try Fixture.macIssues("profile")
+        #expect(issues.contains { $0.message.contains("the window is 420pt") })
+        #expect(!issues.contains { $0.message.contains("screen") })
+    }
+
+    /// Rows scrolled out of a scroll view are not drawn: they overlap nothing below it.
+    @Test func scrolledOutContentOverlapsNothing() {
+        func text(_ string: String, y: Double) -> Node {
+            Node(source: .swiftui, type: "Text", role: .text, frame: Rect(x: 20, y: y, width: 100, height: 20), text: TextInfo(string: string))
+        }
+        let scroll = Node(source: .swiftui, type: "ScrollView", role: .scroll, frame: Rect(x: 0, y: 0, width: 300, height: 100),
+                          scroll: ScrollInfo(contentWidth: 300, contentHeight: 400, offsetX: 0, offsetY: 0, enabled: true),
+                          children: [text("Row 1", y: 10), text("Row 6", y: 110)])
+        let below = text("Caption", y: 110)
+        let window = Node(source: .appkit, type: "NSWindow", role: .window, frame: Rect(x: 0, y: 0, width: 300, height: 300), children: [scroll, below])
+        let snapshot = Snapshot(platform: Snapshot.macOS, app: AppInfo(bundleId: "x", name: "X", pid: 1, osVersion: "27.0"),
+                                screen: ScreenInfo(width: 300, height: 300, scale: 2, safeArea: .zero), windows: [window])
+        let indexed = IndexedSnapshot(snapshot)
+        #expect(indexed.entries.first { $0.node.text?.string == "Row 6" }?.drawnFrame == nil)
+        #expect(Analyzer(for: snapshot).analyze(indexed).isEmpty)
+    }
+
     @Test(arguments: ["profile", "pricing", "badge", "header", "form", "uikit", "settings", "feed"])
     func findsWhatTheScreenPlants(screen: String) throws {
         let issues = try Fixture.issues(screen)

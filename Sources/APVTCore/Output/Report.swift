@@ -9,18 +9,25 @@ public struct InspectReport: Codable, Sendable {
         public var nodes: Int
     }
 
+    public var platform: String
     public var app: AppInfo
     public var device: DeviceInfo?
     public var screen: ScreenInfo
+    /// macOS: the window the report is about, and the app's other windows.
+    public var window: WindowInfo?
+    public var otherWindows: [WindowInfo]?
     public var summary: Summary
     public var issues: [Issue]
     public var notes: [String]
     public var hints: [String: String]
 
     public init(_ s: IndexedSnapshot, issues: [Issue]) {
+        platform = s.snapshot.platform
         app = s.snapshot.app
         device = s.snapshot.device
         screen = s.snapshot.screen
+        window = s.snapshot.window
+        otherWindows = s.snapshot.otherWindows
         summary = Summary(errors: issues.filter { $0.severity == .error }.count,
                           warnings: issues.filter { $0.severity == .warning }.count,
                           nodes: s.entries.count)
@@ -28,16 +35,38 @@ public struct InspectReport: Codable, Sendable {
         notes = s.snapshot.notes
         let systemBreaks = s.snapshot.constraintBreaks.filter { $0.system == true }.count
         if systemBreaks > 0 {
-            notes.append("\(systemBreaks) constraint conflict(s) inside UIKit's own views (alerts, keyboard) were ignored: not the app's to fix.")
+            let own = s.snapshot.platform == Snapshot.macOS ? "AppKit's own views (the title bar, alerts, panels)" : "UIKit's own views (alerts, keyboard)"
+            notes.append("\(systemBreaks) constraint conflict(s) inside \(own) were ignored: not the app's to fix.")
         }
         var hints: [String: String] = [:]
-        for issue in issues { hints[issue.rule.rawValue] = issue.rule.hint }
+        for issue in issues { hints[issue.rule.rawValue] = issue.rule.hint(for: s.snapshot.platform) }
         self.hints = hints
     }
 
     public static func header(_ s: Snapshot) -> String {
         let app = s.app
         var parts = ["\(app.name) (\(app.bundleId), pid \(app.pid))"]
+        if s.platform == Snapshot.macOS {
+            // One window, measured from its top-left corner; `at` is that corner on the screen.
+            parts.append("macOS \(app.osVersion)")
+            let sc = s.screen
+            var window = "window"
+            if let w = s.window {
+                window += " \(w.index) \(Describe.quoted(w.title))"
+                if let kind = w.kind { window += " \(kind)" }
+            }
+            window += " \(Describe.number(sc.width))x\(Describe.number(sc.height))pt @\(Describe.number(sc.scale))x"
+            if let w = s.window, let x = w.x, let y = w.y { window += " at (\(Describe.number(x)),\(Describe.number(y)))" }
+            parts.append(window)
+            var lines = [parts.joined(separator: " · ")]
+            if let others = s.otherWindows, !others.isEmpty {
+                let list = others.map { w in
+                    "\(w.index) \(Describe.quoted(w.title)) \(Describe.number(w.width))x\(Describe.number(w.height))" + (w.kind.map { " \($0)" } ?? "") + (w.key ? " (key)" : "")
+                }
+                lines.append("other windows: \(list.joined(separator: " · "))   # --window <number|title> looks at one")
+            }
+            return lines.joined(separator: "\n")
+        }
         if let d = s.device { parts.append("\(d.name), \(d.runtime)") } else { parts.append("iOS \(app.osVersion)") }
         let sc = s.screen
         var screen = "screen \(Describe.number(sc.width))x\(Describe.number(sc.height))pt @\(Describe.number(sc.scale))x"
@@ -71,12 +100,12 @@ public struct InspectReport: Codable, Sendable {
         }
         if !hints.isEmpty {
             lines.append("how to fix:")
-            for rule in Rule.allCases where hints[rule.rawValue] != nil {
-                lines.append("- \(rule.rawValue): \(rule.hint)")
+            for rule in Rule.allCases {
+                if let hint = hints[rule.rawValue] { lines.append("- \(rule.rawValue): \(hint)") }
             }
         }
         if let first = issues.first(where: { $0.ref != nil })?.ref {
-            lines.append("next: apvt query @\(first)   # the node, its ancestors and metrics · apvt tree · apvt screenshot --annotate <file.png>")
+            lines.append("next: apvt query @\(first)   # the node, its ancestors and metrics · apvt tree · apvt screenshot <file.png>")
         }
         return lines.joined(separator: "\n")
     }

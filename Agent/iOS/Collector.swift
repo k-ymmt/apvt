@@ -262,45 +262,8 @@ struct Collector {
         matchSpaces(nodes)
         nodes = nodes.map { place($0, in: view, spaces: spaces, system: system) }
 
-        // An identifier set on a container reaches every element inside it (SwiftUI propagates
-        // it): such a group names the nodes' lowest common ancestor, not each of them.
-        let axElements = accessibilityElements(of: view)
-        var groups: [String: [AXElement]] = [:]
-        for element in axElements {
-            if let id = element.identifier { groups[id, default: []].append(element) }
-        }
-        for element in axElements where element.identifier == nil || groups[element.identifier!]!.count == 1 {
-            if let path = bestPath(for: element, in: nodes) { apply(element, at: path, to: &nodes) }
-        }
-        for (id, members) in groups where members.count > 1 {
-            let paths = members.compactMap { bestPath(for: $0, in: nodes) }
-            guard var common = paths.first else { continue }
-            for path in paths.dropFirst() {
-                common = Array(zip(common, path).prefix(while: { $0 == $1 }).map(\.0))
-            }
-            guard !common.isEmpty else { continue }
-            // `.background(…).accessibilityIdentifier(…)` names the decorated view: climb from
-            // the common ancestor while the parent is a modifier whose other children are shapes.
-            while common.count > 1 {
-                let parentPath = Array(common.dropLast())
-                let parent = node(at: parentPath, in: nodes)
-                let others = parent.children.indices.filter { $0 != common.last! }.map { parent.children[$0] }
-                guard parent.type.hasPrefix("."), others.allSatisfy({ $0.role == .shape }) else { break }
-                common = parentPath
-            }
-            apply(AXElement(frame: .zero, identifier: id, label: nil, isButton: false), at: common, to: &nodes)
-        }
+        IdentifierMatcher.assign(accessibilityElements(of: view), to: &nodes)
         return nodes.map(measure)
-    }
-
-    private func node(at path: [Int], in nodes: [Node]) -> Node {
-        var list = nodes
-        var current = nodes[path[0]]
-        for index in path {
-            current = list[index]
-            list = current.children
-        }
-        return current
     }
 
     /// Recorded coordinates to screen points; system subtrees marked.
@@ -340,16 +303,9 @@ struct Collector {
         return node
     }
 
-    private struct AXElement {
-        var frame: Rect
-        var identifier: String?
-        var label: String?
-        var isButton: Bool
-    }
-
     /// Accessibility answers, for identifiers: SwiftUI's debug data does not carry them.
-    private func accessibilityElements(of view: UIView) -> [AXElement] {
-        var result: [AXElement] = []
+    private func accessibilityElements(of view: UIView) -> [AccessibilityElement] {
+        var result: [AccessibilityElement] = []
         var visited = 0
         var seen = Set<ObjectIdentifier>()
         func visit(_ object: NSObject, depth: Int) {
@@ -360,7 +316,7 @@ struct Collector {
                 ?? (object.responds(to: Self.identifierSelector) ? object.perform(Self.identifierSelector)?.takeUnretainedValue() as? String : nil)
             let label = object.accessibilityLabel
             if (identifier?.isEmpty == false) || (label?.isEmpty == false) {
-                result.append(AXElement(frame: rect(object.accessibilityFrame), identifier: identifier?.isEmpty == false ? identifier : nil,
+                result.append(AccessibilityElement(frame: rect(object.accessibilityFrame), identifier: identifier?.isEmpty == false ? identifier : nil,
                                         label: label, isButton: object.accessibilityTraits.contains(.button)))
             }
             let children: [Any]
@@ -387,99 +343,5 @@ struct Collector {
         }
         walk(view)
         return result
-    }
-
-    /// The node whose frame matches the element best: controls first, then the outermost of
-    /// equal frames, and not one that already has an identifier.
-    private func bestPath(for element: AXElement, in nodes: [Node]) -> [Int]? {
-        var best: (path: [Int], score: Double)?
-        func score(_ a: Rect, _ b: Rect) -> Double {
-            guard let i = a.intersection(b) else { return 0 }
-            return i.area / max(a.area + b.area - i.area, 0.0001)
-        }
-        func search(_ list: [Node], path: [Int]) {
-            for (index, node) in list.enumerated() {
-                var s = score(node.frame, element.frame)
-                if s > 0.85 {
-                    if element.isButton, node.role == .control { s += 0.2 }
-                    if node.identifier != nil { s -= 0.5 }
-                    if best == nil || s > best!.score + 0.0001 { best = (path + [index], s) }
-                }
-                search(node.children, path: path + [index])
-            }
-        }
-        search(nodes, path: [])
-        if let best { return best.path }
-        // `.offset` moves what is drawn (and its accessibility frame) but not the layout frame
-        // SwiftUI reports, so the frames no longer overlap enough. Fall back to the nearest node
-        // of the same size that shows the same text.
-        guard let label = element.label, !label.isEmpty else { return nil }
-        var near: (path: [Int], distance: Double)?
-        func searchMoved(_ list: [Node], path: [Int]) {
-            for (index, node) in list.enumerated() {
-                if node.identifier == nil, node.text?.string == label || node.label == label,
-                   abs(node.frame.width - element.frame.width) < 1, abs(node.frame.height - element.frame.height) < 1 {
-                    let d = abs(node.frame.x - element.frame.x) + abs(node.frame.y - element.frame.y)
-                    if near == nil || d < near!.distance { near = (path + [index], d) }
-                }
-                searchMoved(node.children, path: path + [index])
-            }
-        }
-        searchMoved(nodes, path: [])
-        return near?.path
-    }
-
-    private func apply(_ element: AXElement, at path: [Int], to nodes: inout [Node]) {
-        func update(_ list: inout [Node], _ path: ArraySlice<Int>) {
-            guard let first = path.first else { return }
-            if path.count == 1 {
-                if let id = element.identifier, list[first].identifier == nil { list[first].identifier = id }
-                // The debug data holds a Text's localization key; accessibility holds what is shown.
-                if list[first].type == "Text", let label = element.label, !label.isEmpty, element.frame != .zero {
-                    list[first].text?.string = label
-                    return
-                }
-                if let label = element.label, label != list[first].text?.string, list[first].label == nil,
-                   list[first].role == .control || element.identifier != nil {
-                    list[first].label = label
-                }
-            } else {
-                update(&list[first].children, path.dropFirst())
-            }
-        }
-        update(&nodes, path[...])
-    }
-}
-
-/// What a `LocalizedStringKey` shows in the app's current language. SwiftUI looks keys up in
-/// `Localizable` of the main bundle unless a view names another bundle — which the debug data
-/// does not say, so the other loaded bundles (Swift packages' resources) are tried next.
-@MainActor
-enum Localizer {
-    private static var cache: [String: String?] = [:]
-    private static let missing = "\u{1}apvt-missing\u{1}"
-
-    static func localize(_ key: String) -> String? {
-        MainActor.assumeIsolated {
-            if let hit = cache[key] { return hit }
-            var result: String?
-            for bundle in [Bundle.main] + Bundle.allBundles + resourceBundles() {
-                let value = bundle.localizedString(forKey: key, value: missing, table: nil)
-                if value != missing { result = value; break }
-            }
-            cache[key] = result
-            return result
-        }
-    }
-
-    private static var resources: [Bundle]?
-
-    /// `*.bundle` resource bundles inside the app (SwiftPM `Bundle.module`s), loaded lazily by the app.
-    private static func resourceBundles() -> [Bundle] {
-        if let resources { return resources }
-        let urls = (try? FileManager.default.contentsOfDirectory(at: Bundle.main.bundleURL, includingPropertiesForKeys: nil)) ?? []
-        let found = urls.filter { $0.pathExtension == "bundle" }.compactMap(Bundle.init(url:))
-        resources = found
-        return found
     }
 }

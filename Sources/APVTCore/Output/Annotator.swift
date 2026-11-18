@@ -35,7 +35,7 @@ public enum Annotator {
         }
 
         if outline == .all {
-            let analyzer = Analyzer()
+            let analyzer = Analyzer(for: s.snapshot)
             for e in s.entries where analyzer.isContent(e) && !e.frame.isEmpty {
                 stroke(context, pixels(e.frame), color: CGColor(srgbRed: 0.1, green: 0.5, blue: 1, alpha: 0.7), width: max(1, scale / 2))
                 label(context, "@\(e.ref)", at: pixels(e.frame), color: CGColor(srgbRed: 0.1, green: 0.4, blue: 0.9, alpha: 0.85), scale: scale * 0.8)

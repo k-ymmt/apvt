@@ -24,6 +24,29 @@ public enum SwiftUIDebugParser {
         guard let roots = json as? [[String: Any]] else {
             throw ParseError(description: "view debug data is not an array of nodes")
         }
+        return parse(nodes: roots, localize: localize)
+    }
+
+    /// The same, from data already read as JSON objects.
+    public static func parse(nodes roots: [[String: Any]], localize: ((String) -> String?)? = nil) -> [Node] {
+        // The data is hundreds of levels deep and is walked recursively: more stack than a
+        // secondary thread has (512 KB). The agent parses on the main thread, which has enough.
+        if Thread.isMainThread { return parseHere(roots, localize: localize) }
+        nonisolated(unsafe) let input = roots
+        nonisolated(unsafe) let localize = localize
+        nonisolated(unsafe) var output: [Node] = []
+        let done = DispatchSemaphore(value: 0)
+        let thread = Thread {
+            output = parseHere(input, localize: localize)
+            done.signal()
+        }
+        thread.stackSize = 64 << 20
+        thread.start()
+        done.wait()
+        return output
+    }
+
+    private static func parseHere(_ roots: [[String: Any]], localize: ((String) -> String?)?) -> [Node] {
         var state = State()
         state.localize = localize
         var nodes: [Node] = []
@@ -113,12 +136,23 @@ public enum SwiftUIDebugParser {
         var childSpace = space
         var contentSpace: Int?
         var contentSize: (Double, Double)?
+        // A control SwiftUI builds without a framed node of its own (macOS): named on the chain.
+        var chainControl: String?
+        // What SwiftUI resolved the first text of the chain to: its font and line limit.
+        var resolved: ResolvedText?
+        // `.opacity(…)` below 1 met on the frameless chain: it dims the framed nodes below that
+        // point of the chain, or this node's own content when the chain ends without one.
+        var ownOpacity: Double?
         // Walk the frameless chain under this node: its modifiers, then the next framed nodes.
-        func descend(_ list: [[String: Any]]) {
+        func descend(_ list: [[String: Any]], opacity: Double?) {
             for child in list {
                 if pair(attribute(child, 3)) != nil, let childSize = pair(attribute(child, 4)) {
                     if contentSpace != nil, contentSize == nil { contentSize = childSize }
-                    kids += convert(child, font: childFont, space: childSpace, state: &state)
+                    var converted = convert(child, font: childFont, space: childSpace, state: &state)
+                    if let opacity {
+                        for i in converted.indices { converted[i].alpha = min(converted[i].alpha ?? 1, opacity) }
+                    }
+                    kids += converted
                 } else {
                     if splitGeneric(attribute(child, 0)?["readableType"] as? String ?? "").base == "SystemScrollView", contentSpace == nil {
                         contentSpace = state.nextSpace
@@ -129,6 +163,11 @@ public enum SwiftUIDebugParser {
                     if name.hasPrefix("_EnvironmentKeyWritingModifier<Optional<Font>>"),
                        let v = attribute(child, 1), let f = FontHint(v) {
                         childFont = f
+                    }
+                    var opacity = opacity
+                    if splitGeneric(name).base == "_OpacityEffect", let v = attribute(child, 1), let o = scalar(named: "opacity", in: v), o < 1 {
+                        opacity = min(opacity ?? 1, o)
+                        ownOpacity = min(ownOpacity ?? 1, o)
                     }
                     if let m = modifierName(name) {
                         // Keep the arguments that explain a size: frame(width: 150), padding(…), offset(…).
@@ -149,14 +188,22 @@ public enum SwiftUIDebugParser {
                     } else if base == "_ShapeView" || base == "StrokeShapeView", looseShape == nil {
                         looseShape = shapeName(args.first)
                     }
-                    descend(children(child))
+                    if chainControl == nil { chainControl = chainControls[base] }
+                    if base == "StyledTextContentView", resolved == nil, let v = attribute(child, 1) {
+                        resolved = ResolvedText(v)
+                    }
+                    descend(children(child), opacity: opacity)
                 }
             }
         }
-        descend(children(raw))
+        descend(children(raw), opacity: nil)
 
         var node = makeNode(readable: readable, value: value, frame: frame, font: font, localize: state.localize)
         node.space = space
+        if let resolved {
+            if node.type == "Text" { resolved.apply(to: &node.text) } else if looseText != nil { resolved.apply(to: &looseText) }
+            if resolved.shrinks, node.type == "Text" || looseText != nil { node.addTrait("shrinksToFit") }
+        }
         if let contentSpace {
             node.type = "ScrollView"
             node.role = .scroll
@@ -175,13 +222,21 @@ public enum SwiftUIDebugParser {
             node.addTrait("interactive")
             node.traits?.removeAll { $0 == "wrapper" }
         }
-        // A text field's insides (its placeholder ZStack, …) are drawn by the UIKit text field
-        // it hosts, which the UIKit walk reports; SwiftUI does not lay them out.
-        if node.role == .control, node.type.hasSuffix("Field") {
+        // Not where a framed control of its own follows below (iOS records those).
+        if let chainControl, node.has("wrapper"), node.role != .control, !kids.contains(where: { $0.role == .control }) {
+            node.type = chainControl
+            node.role = .control
+            node.addTrait("interactive")
+            node.traits?.removeAll { $0 == "wrapper" }
+        }
+        // A text field's insides (its placeholder ZStack, …) are drawn by the UIKit / AppKit view
+        // it hosts, which the native walk reports; SwiftUI does not lay them out.
+        if node.role == .control, node.type.hasSuffix("Field") || bridgedControls.contains(node.type) {
             node.children = node.children.map(markInternal)
         }
         if modifiers.contains("clipped") { node.addTrait("clips") }
         if modifiers.contains("hidden") { node.addTrait("hidden") }
+        if let ownOpacity, kids.isEmpty { node.alpha = ownOpacity }
         if kids.isEmpty, node.has("wrapper"), node.role != .control, let looseShape {
             node.type = looseShape
             node.role = .shape
@@ -208,6 +263,7 @@ public enum SwiftUIDebugParser {
                 for m in only.modifiers ?? [] where !merged.contains(m) { merged.append(m) }
                 only.modifiers = merged
                 if merged.contains("clipped") { only.addTrait("clips") }
+                if merged.contains("hidden") { only.addTrait("hidden") }
             }
             return [only]
         }
@@ -235,6 +291,17 @@ public enum SwiftUIDebugParser {
         }
         return fallback
     }
+
+    /// Frameless types that say what control the framed wrapper above them is.
+    private static let chainControls: [String: String] = [
+        "PrimitiveSystemTextField": "TextField", "ResolvedSystemTextField": "TextField",
+        "MenuButtonInteractionModifier": "PopUpButton",
+        "_SegmentedControl": "SegmentedControl", "ResolvedSegmentedControl": "SegmentedControl",
+        "AppKitDatePicker": "DatePicker", "BridgedColorPicker": "ColorPicker", "AppKitTextEditor": "TextEditor",
+    ]
+
+    /// Controls an AppKit view draws entirely.
+    private static let bridgedControls: Set<String> = ["DatePicker", "ColorPicker", "TextEditor", "Stepper"]
 
     private static let containers: Set<String> = [
         "HStack", "VStack", "ZStack", "LazyHStack", "LazyVStack", "LazyHGrid", "LazyVGrid",
@@ -280,6 +347,10 @@ public enum SwiftUIDebugParser {
             return node(base.replacingOccurrences(of: "System", with: ""), .control, traits: ["interactive"])
         case "Divider":
             return node("Divider", .shape)
+        case "Switch":
+            return node("Switch", .control, traits: ["interactive"])
+        case "AppKitStepper":
+            return node("Stepper", .control, traits: ["interactive"])
         default:
             if containers.contains(base) { return node(base, .container) }
             if let name = layoutModifiers[base] {
@@ -317,7 +388,8 @@ public enum SwiftUIDebugParser {
         case "_ScaleEffect": return "scaleEffect"
         case "_ShadowEffect": return "shadow"
         case "_MaskEffect": return "mask"
-        case "_HiddenModifier": return "hidden"
+        // HiddenForLayoutModifier: the copy a macOS control lays out only to size itself.
+        case "_HiddenModifier", "HiddenForLayoutModifier": return "hidden"
         case "_PositionLayout": return "position"
         case "_AllowsHitTestingModifier": return "allowsHitTesting"
         case "_TraitWritingModifier":
@@ -395,6 +467,14 @@ public enum SwiftUIDebugParser {
     }
 
     /// `width: 150, height: 140` from a layout modifier's value.
+    /// A number stored directly in a modifier's value: `_OpacityEffect(opacity: 0)`.
+    private static func scalar(named name: String, in value: [String: Any]) -> Double? {
+        for sub in value["subattributes"] as? [[String: Any]] ?? [] where sub["name"] as? String == name {
+            return sub["value"].flatMap(number)
+        }
+        return nil
+    }
+
     private static func scalarSummary(_ value: [String: Any]) -> String? {
         var parts: [String] = []
         for sub in value["subattributes"] as? [[String: Any]] ?? [] {
@@ -420,6 +500,62 @@ public enum SwiftUIDebugParser {
 
 /// What the debug data says about a font. SwiftUI serializes fonts only partly: a `.bold()`
 /// font loses its base style, so this is a hint the agent completes or guesses.
+/// The text SwiftUI laid out (`StyledTextContentView`): the attributed string with its real font,
+/// and the line limit. Present for texts SwiftUI has measured; newer systems record more of it.
+struct ResolvedText {
+    var fontName: String?
+    var fontSize: Double?
+    var bold: Bool?
+    var lineLimit: Int?
+    var shrinks = false
+
+    init?(_ value: [String: Any]) {
+        var found = false
+        var fontName: String?, fontSize: Double?, bold: Bool?, lineLimit: Int?, shrinks = false
+        func walk(_ attr: [String: Any], depth: Int) {
+            let name = attr["name"] as? String
+            if name == "string", let string = attr["value"] as? String, let font = Self.font(in: string) {
+                (fontName, fontSize, bold) = font
+                found = true
+            } else if name == "lineLimit", let v = attr["value"], let n = SwiftUIDebugParser.number(v), n >= 1 {
+                lineLimit = Int(n)
+            } else if name == "minScaleFactor", let v = attr["value"], let n = SwiftUIDebugParser.number(v), n < 1 {
+                shrinks = true
+            }
+            guard depth < 4 else { return }
+            for sub in attr["subattributes"] as? [[String: Any]] ?? [] { walk(sub, depth: depth + 1) }
+        }
+        walk(value, depth: 0)
+        guard found else { return nil }
+        (self.fontName, self.fontSize, self.bold, self.lineLimit, self.shrinks) = (fontName, fontSize, bold, lineLimit, shrinks)
+    }
+
+    /// The font in an attributed string's description.
+    /// AppKit: `NSFont = "\".SFNS-Regular 13.00 pt. P [] (0x…) …\""` — the exact font;
+    /// UIKit: `NSFont = "<UICTFont: 0x…> font-family: \"…\"; font-weight: bold; …; font-size: 22.00pt"`.
+    static func font(in description: String) -> (name: String?, size: Double?, bold: Bool?)? {
+        guard let start = description.range(of: "NSFont = \"") else { return nil }
+        let line = description[start.upperBound...].prefix(while: { $0 != "\n" })
+        // UIKit's description gives a family, "normal" or "bold" and a size: not enough to measure
+        // with (a semibold reads "bold"), so the text style and the frame stay the source there.
+        if line.contains("font-size: ") { return (nil, nil, nil) }
+        guard let end = line.range(of: " pt.") else { return nil }
+        let words = line[..<end.lowerBound].split(separator: " ")
+        guard words.count >= 2, let size = Double(words[words.count - 1]) else { return nil }
+        let name = words.dropLast().joined(separator: " ").trimmingCharacters(in: CharacterSet(charactersIn: "\\\""))
+        let heavy = ["Semibold", "Bold", "Heavy", "Black"].contains { name.hasSuffix("-" + $0) }
+        return (name.isEmpty ? nil : name, size, heavy)
+    }
+
+    func apply(to info: inout TextInfo?) {
+        guard info != nil else { return }
+        if let fontName { info?.fontName = fontName }
+        if let fontSize { info?.fontSize = fontSize }
+        if let bold { info?.bold = bold }
+        if let lineLimit { info?.maxLines = lineLimit }
+    }
+}
+
 struct FontHint {
     var style: String?
     var size: Double?
