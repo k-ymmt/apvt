@@ -7,40 +7,44 @@ import Foundation
 struct APVT: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "apvt",
-        abstract: "See what your views really look like: layout issues, the view tree and frames of a running iOS Simulator app.",
+        abstract: "See what your views really look like: layout issues, the view tree and frames of a running iOS Simulator or macOS app.",
         discussion: """
-        apvt reads the live UI of an app in the iOS Simulator — UIKit views and SwiftUI views \
-        alike, with frames in screen points — and reports layout mistakes: content past the \
-        screen edge, truncated or squeezed text, overlaps, clipping, the unsafe area, tiny tap \
-        targets, ambiguous and broken Auto Layout constraints. The app needs no code changes: \
-        a small agent library is loaded into it at launch.
+        apvt reads the live UI of an app in the iOS Simulator or of a macOS app — UIKit, AppKit \
+        and SwiftUI views alike, with frames in points — and reports layout mistakes: content \
+        past the screen's or window's edge, truncated or squeezed text, overlaps, clipping, the \
+        unsafe area, tiny tap targets, ambiguous and broken Auto Layout constraints. The app \
+        needs no code changes: a small agent library is loaded into it at launch.
 
         WORKFLOW
-          1. apvt setup            once per simulator boot
-          2. launch the app        xcrun simctl launch, or the home screen;
-                                   from Xcode or Xcode MCP, pass the variables
-                                   of `apvt launch-env` to the launch instead
-          3. go to the screen      with your usual tools (taps, deep links);
+          1. apvt launch <app>     starts the app with the agent and waits for it:
+                                   a macOS .app, a simulator .app, or the bundle id
+                                   of an app installed on the booted simulator
+                                   (from Xcode or Xcode MCP: pass the variables of
+                                   `apvt launch-env` to that launch instead)
+          2. go to the screen      with your usual tools (taps, clicks, deep links);
                                    apvt type "text" fills the focused field
-          4. apvt inspect          issues on the current screen, with @N
-          5. apvt query @N         one node: ancestors, text metrics, issues
+          3. apvt inspect          issues on the current screen / in the key window,
+                                   with @N
+          4. apvt query @N         one node: ancestors, text metrics, issues
              apvt tree             the view tree with frames
              apvt assert <sel> …   check what you meant (--inside screen, …)
              apvt screenshot f.png issues outlined and labelled @N
-          6. fix, rebuild, relaunch, apvt inspect again
+          5. fix, rebuild, apvt launch again, apvt inspect again
 
         SELECTORS (query, assert, tree --root)
           @12   #identifier   text:Sub   text="Exact text"   type:Button
           role:control   type:Text,text:Inbox (terms joined by commas)
 
-        Frames are points, origin top-left of the screen: (x,y widthxheight).
+        Frames are points (x,y widthxheight), origin top-left: of the screen on iOS,
+        of the window (title bar included) on macOS, where one window is looked at —
+        the key window, or --window <number|title>.
         Exit codes: 0 ok, 1 a check failed (assert; inspect found an error),
         2 usage, 3 environment or app. Every command takes --json.
-        Right after launching an app, add --wait 10 so apvt waits for it.
+        After launching an app some other way, add --wait 10 so apvt waits for it.
         `apvt rules` lists what inspect checks and how to fix each.
         """,
-        version: "0.2.0",
-        subcommands: [Setup.self, Teardown.self, Status.self, LaunchEnv.self, Inspect.self, Tree.self, Query.self, Assert.self,
+        version: "0.3.0",
+        subcommands: [Launch.self, Setup.self, Teardown.self, Status.self, LaunchEnv.self, Inspect.self, Tree.self, Query.self, Assert.self,
                       Screenshot.self, TypeText.self, Rules.self, Debug.self]
     )
 }
@@ -51,8 +55,11 @@ struct TargetOptions: ParsableArguments {
     @Option(help: "Simulator name or UDID. Default: the only booted simulator.")
     var device: String?
 
-    @Option(help: "Bundle id (or process name) of the app. Default: the only running app that has the agent.")
+    @Option(help: "Bundle id (or process name, or pid) of the app. Default: the only running app that has the agent, in a simulator or on the Mac.")
     var app: String?
+
+    @Option(help: ArgumentHelp("macOS: the window to look at, by number (1 is the frontmost) or title. Default: the key window.", valueName: "number|title"))
+    var window: String?
 
     @Option(help: ArgumentHelp("Read a snapshot saved with --save instead of asking the running app.", valueName: "file.json"))
     var snapshot: String?
@@ -60,10 +67,10 @@ struct TargetOptions: ParsableArguments {
     @Option(help: ArgumentHelp("Wait up to this many seconds for the app's agent to appear, e.g. right after launching it.", valueName: "seconds"))
     var wait: Double = 0
 
-    @Option(help: .hidden)
-    var platform: String = "ios-simulator"
+    @Option(help: ArgumentHelp("ios-simulator or macos. Default: wherever the one answering app is.", valueName: "platform"))
+    var platform: String?
 
-    var target: Target { Target(device: device, app: app, snapshotFile: snapshot, wait: wait) }
+    var target: Target { Target(device: device, app: app, snapshotFile: snapshot, wait: wait, platform: platform, window: window) }
 }
 
 struct JSONFlag: ParsableArguments {
@@ -101,8 +108,9 @@ func printJSON<T: Encodable>(_ value: T) {
     }
 }
 
-func parseRules(_ names: [String]) throws -> Set<Rule> {
-    guard !names.isEmpty else { return Set(Rule.allCases) }
+/// `--rule` names, or the rules that apply on the snapshot's platform when none is given.
+func parseRules(_ names: [String], platform: String) throws -> Set<Rule> {
+    guard !names.isEmpty else { return Rule.defaults(for: platform) }
     var rules = Set<Rule>()
     for name in names.flatMap({ $0.split(separator: ",").map(String.init) }) {
         guard let rule = Rule(rawValue: name) else {
@@ -117,7 +125,7 @@ func parseRules(_ names: [String]) throws -> Set<Rule> {
 
 struct Setup: ParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Make apps launched on the simulator from now on load the apvt agent.",
+        abstract: "iOS Simulator: make apps launched on it from now on load the apvt agent (apvt launch does this itself).",
         discussion: """
         Builds the agent for the simulator (first run, a few seconds; cached), then sets \
         DYLD_INSERT_LIBRARIES in the simulator's launchd so every app launched afterwards — by \
@@ -152,7 +160,7 @@ struct Setup: ParsableCommand {
 }
 
 struct Teardown: ParsableCommand {
-    static let configuration = CommandConfiguration(abstract: "Undo apvt setup: apps launched from now on run without the agent.")
+    static let configuration = CommandConfiguration(abstract: "iOS Simulator: undo apvt setup; apps launched from now on run without the agent.")
 
     @Option(help: "Simulator name or UDID. Default: the only booted simulator.")
     var device: String?
@@ -170,7 +178,7 @@ struct Teardown: ParsableCommand {
 }
 
 struct Status: ParsableCommand {
-    static let configuration = CommandConfiguration(abstract: "Show booted simulators, whether they are set up, and which apps have the agent.")
+    static let configuration = CommandConfiguration(abstract: "Show booted simulators, whether they are set up, and which apps (simulator and macOS) have the agent.")
 
     @Option(help: "Simulator name or UDID. Default: every booted simulator.")
     var device: String?
@@ -178,7 +186,7 @@ struct Status: ParsableCommand {
 
     func run() throws {
         try apvt.run(json: output.json) {
-            let status = try Session.platform("ios-simulator").status(device: device)
+            let status = try Session.status(device: device)
             if output.json { printJSON(status); return 0 }
             if status.devices.isEmpty { print("no booted simulator (xcrun simctl boot <udid>)") }
             for d in status.devices {
@@ -190,6 +198,13 @@ struct Status: ParsableCommand {
                     print("  running without agent: \(bundle) — relaunch: xcrun simctl terminate \(d.udid) \(bundle) && xcrun simctl launch \(d.udid) \(bundle)")
                 }
                 if d.agents.isEmpty && d.appsWithoutAgent.isEmpty { print("  no user app running") }
+            }
+            if let agents = status.agents {
+                print("macOS:")
+                for a in agents {
+                    print("  agent: \(a.bundleId) (\(a.name), pid \(a.pid), loaded by \(a.loadedBy)\(a.transport == "pipe" ? ", sandboxed: pipes" : "")\(a.swiftUIDebug ? "" : ", SwiftUI debug off"))")
+                }
+                if agents.isEmpty { print("  no app with the agent (apvt launch path/to/MyApp.app starts one)") }
             }
             if status.oldLLDBHook { print("an old apvt hook is still in ~/.lldbinit or ~/.lldbinit-Xcode: apvt teardown (or apvt setup) removes it") }
             print("agent build: \(status.agentBuild ?? "not built yet")")
@@ -203,38 +218,107 @@ struct LaunchEnv: ParsableCommand {
         commandName: "launch-env",
         abstract: "Print the environment variables that make an app launched by Xcode load the agent.",
         discussion: """
-        For launches apvt setup cannot reach: Xcode's Run and Xcode MCP's \
-        DeviceInteractionInstallAndRun pass their own DYLD_INSERT_LIBRARIES, which replaces \
-        the one apvt setup puts into launchd. Pass these variables to that launch instead, for \
-        example as DeviceInteractionInstallAndRun's environmentVariables (--xcode adds \
-        "$(inherited)": "" to keep the scheme's own), or in the scheme's Run > Environment Variables. The app then \
-        runs under Xcode, with its console, and answers apvt. Builds the agent if needed and \
-        turns on the simulator's application accessibility (as setup does); launchd is left \
-        alone.
+        For launches apvt does not make itself: Xcode's Run and Xcode MCP. Pass these variables \
+        to that launch — in the scheme's Run > Environment Variables, or as Xcode MCP's \
+        environmentVariables (--xcode adds "$(inherited)": "" to keep the scheme's own). The app \
+        then runs under Xcode, with its console, and answers apvt.
+
+        Without an argument: the iOS Simulator (Xcode passes its own DYLD_INSERT_LIBRARIES, which \
+        replaces the one apvt setup puts into launchd). Builds the agent if needed and turns on \
+        the simulator's application accessibility; launchd is left alone.
+
+        With a macOS .app: the variables for that app — the agent signed for the app's team when \
+        its Hardened Runtime asks for it, and for a sandboxed app a sandbox extension token \
+        (valid until the Mac restarts; print the variables again after that).
         """
     )
 
+    @Argument(help: ArgumentHelp("A built macOS .app: print the variables for launching that app. Without it: for iOS Simulator apps.", valueName: "App.app"))
+    var app: String?
     @Option(help: "Simulator name or UDID. Default: the only booted simulator.")
     var device: String?
+    @Option(help: ArgumentHelp("macOS: sign the agent with this code signing identity instead of the one apvt picks.", valueName: "name|hash"))
+    var identity: String?
     @Flag(help: "Print KEY=value lines instead of JSON.")
     var shell = false
     @Flag(help: "Print the JSON on one line, for calls made through a shell wrapper or a tool argument.")
     var compact = false
-    @Flag(help: ArgumentHelp("Add \"$(inherited)\": \"\" so the JSON can be passed as-is to Xcode MCP's DeviceInteractionInstallAndRun environmentVariables, keeping the scheme's own variables."))
+    @Flag(help: ArgumentHelp("Add \"$(inherited)\": \"\" so the JSON can be passed as-is to Xcode MCP's environmentVariables, keeping the scheme's own variables."))
     var xcode = false
 
     func run() throws {
         try apvt.run(json: !shell) {
-            var env = try Session.launchEnvironment(device: device)
+            var env = try Session.launchEnvironment(app: app, device: device, identity: identity)
             if xcode { env["$(inherited)"] = "" }
             if shell {
-                env.keys.sorted().forEach { print("\($0)=\(env[$0]!)") }
+                // Quoted where the shell would read something else into it (a sandbox token holds ";").
+                let plain = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-./:=+,@%")
+                env.keys.sorted().forEach { key in
+                    let value = env[key]!
+                    let quoted = value.unicodeScalars.allSatisfy(plain.contains) ? value : "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+                    print("\(key)=\(quoted)")
+                }
             } else if compact {
                 let data = try JSONSerialization.data(withJSONObject: env, options: [.sortedKeys, .withoutEscapingSlashes])
                 print(String(decoding: data, as: UTF8.self))
             } else {
                 printJSON(env)
             }
+            return 0
+        }
+    }
+}
+
+// MARK: - launch
+
+struct Launch: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Start (or restart) an app with the apvt agent in it, and wait until the agent answers.",
+        discussion: """
+        <app> is a built .app — a macOS app or an iOS Simulator app, told apart by its \
+        Info.plist — or the bundle id of an app already installed on the booted simulator. A \
+        running instance is terminated first, so the app always starts with the current agent. \
+        Arguments after -- go to the app.
+
+        macOS: the agent is loaded through DYLD_INSERT_LIBRARIES. A Debug build works as Xcode \
+        makes it; with the Hardened Runtime the agent is signed with the certificate of the \
+        app's team from your keychain (--identity picks another), and a sandboxed app gets a \
+        sandbox extension so its agent can answer. An app that can never load it (Hardened \
+        Runtime without get-task-allow: a release build) is not launched; the error says how to \
+        build one that can.
+
+        iOS Simulator: runs apvt setup on the simulator when it has not been, installs the .app \
+        when given one, then launches the app with simctl.
+
+        EXAMPLES
+          apvt launch build/Debug/MyMacApp.app
+          apvt launch DerivedData/…/Debug-iphonesimulator/MyApp.app -- -screen profile
+          apvt launch com.example.MyApp --device "iPhone 17 Pro"
+        """
+    )
+
+    @Argument(help: ArgumentHelp("A built .app (macOS or iOS Simulator), or the bundle id of an app installed on the simulator.", valueName: "app"))
+    var app: String
+    @Argument(parsing: .postTerminator, help: ArgumentHelp("Arguments for the app, after --.", valueName: "app-argument"))
+    var arguments: [String] = []
+    @Option(help: "Simulator name or UDID. Default: the only booted simulator.")
+    var device: String?
+    @Option(help: ArgumentHelp("Give up when the agent has not answered after this many seconds.", valueName: "seconds"))
+    var wait: Double = 15
+    @Option(help: ArgumentHelp("macOS: sign the agent with this code signing identity instead of the one apvt picks.", valueName: "name|hash"))
+    var identity: String?
+    @Flag(help: "Rebuild the agent even if a cached build exists.")
+    var rebuild = false
+    @OptionGroup var output: JSONFlag
+
+    func run() throws {
+        try apvt.run(json: output.json) {
+            let report = try Session.launch(LaunchOptions(app: app, device: device, arguments: arguments, wait: wait, identity: identity, rebuild: rebuild))
+            if output.json { printJSON(report); return 0 }
+            print("launched \(report.agent.title) · \(report.agent.place); its agent answers")
+            report.actions.forEach { print("- \($0)") }
+            print("next:")
+            report.next.forEach { print("- \($0)") }
             return 0
         }
     }
@@ -247,11 +331,12 @@ struct TypeText: ParsableCommand {
         commandName: "type",
         abstract: "Type text into the text field that has keyboard focus in the app.",
         discussion: """
-        Tap the field first (with the tool that drives the simulator), then: apvt type "hello". \
-        The agent inserts the text through UIKeyInput, as the keyboard does, so SwiftUI \
-        bindings, delegates and .onChange see it. --replace clears the field first; --submit \
-        presses Return afterwards (textFieldShouldReturn, SwiftUI .onSubmit). Prints the field \
-        and its value afterwards. Faster and more reliable than tapping keys one by one, and \
+        Tap or click the field first (with the tool that drives the simulator or the Mac), \
+        then: apvt type "hello". The agent inserts the text as the keyboard does (UIKeyInput; \
+        on macOS NSTextInputClient), so SwiftUI bindings, delegates and .onChange see it. \
+        --replace clears the field first; --submit presses Return afterwards \
+        (textFieldShouldReturn, the field's action, SwiftUI .onSubmit). Prints the field and its \
+        value afterwards. Faster and more reliable than pressing keys one by one, and \
         independent of the keyboard layout.
         """
     )
@@ -267,8 +352,7 @@ struct TypeText: ParsableCommand {
 
     func run() throws {
         try apvt.run(json: output.json) {
-            let platform = try Session.platform(target.platform)
-            let (response, agent) = try Session.type(platform, target.target, text: text, replace: replace, submit: submit)
+            let (response, agent) = try Session.type(target.target, text: text, replace: replace, submit: submit)
             if output.json { printJSON(response); return 0 }
             print("typed into \(response.focused ?? "?") of \(agent.title)")
             print("value: \(response.value.map { "\"\($0)\"" } ?? "-")")
@@ -282,10 +366,12 @@ struct TypeText: ParsableCommand {
 
 struct Inspect: ParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Report layout issues on the app's current screen.",
+        abstract: "Report layout issues on the app's current screen (macOS: in its key window).",
         discussion: """
         Each issue names a node (@N, as in apvt tree / query) and its frame in points, and ends \
-        with how to fix that kind of issue in SwiftUI and UIKit. Run `apvt rules` for the list.
+        with how to fix that kind of issue in SwiftUI and UIKit / AppKit. Run `apvt rules` for \
+        the list. A macOS app is inspected one window at a time: the key window, or the one \
+        --window names; the first line lists the others.
         """
     )
 
@@ -306,16 +392,15 @@ struct Inspect: ParsableCommand {
 
     func run() throws {
         try apvt.run(json: output.json) {
-            let platform = try Session.platform(target.platform)
-            let (s, agent) = try Session.snapshot(platform, target.target)
+            let (s, connection) = try Session.snapshot(target.target)
             var analyzer = Analyzer()
-            analyzer.rules = try parseRules(rules)
+            analyzer.rules = try parseRules(rules, platform: s.snapshot.platform)
             analyzer.minimumTarget = minTarget
             let issues = analyzer.analyze(s)
             if let save { try Session.save(s.snapshot, to: save) }
             if let annotate {
-                guard let agent else { throw APVTError(.usage, "--annotate needs a running app, not --snapshot") }
-                try writeAnnotated(platform, agent, s, issues, path: annotate, outline: .issues)
+                guard let connection else { throw APVTError(.usage, "--annotate needs a running app, not --snapshot") }
+                try writeAnnotated(connection, window: windowOf(s, target), s, issues, path: annotate, outline: .issues)
             }
             let report = InspectReport(s, issues: issues)
             if output.json {
@@ -335,11 +420,17 @@ struct Inspect: ParsableCommand {
     }
 }
 
-func writeAnnotated(_ platform: any Platform, _ agent: RunningAgent, _ s: IndexedSnapshot, _ issues: [Issue],
+/// The window a snapshot was taken of, so a screenshot that follows shows the same one even if
+/// the key window changed in between.
+func windowOf(_ s: IndexedSnapshot, _ target: TargetOptions) -> String? {
+    target.window ?? s.snapshot.window.map { String($0.index) }
+}
+
+func writeAnnotated(_ connection: Connection, window: String?, _ s: IndexedSnapshot, _ issues: [Issue],
                     path: String, outline: Annotator.Outline) throws {
     let raw = URL(fileURLWithPath: NSTemporaryDirectory()).appending(path: "apvt-\(UUID().uuidString).png")
     defer { try? FileManager.default.removeItem(at: raw) }
-    try platform.screenshot(of: agent, to: raw)
+    try connection.platform.screenshot(of: connection.agent, window: window, to: raw)
     try Annotator.annotate(screenshot: raw, output: URL(fileURLWithPath: path), snapshot: s, issues: issues, outline: outline)
 }
 
@@ -347,11 +438,11 @@ func writeAnnotated(_ platform: any Platform, _ agent: RunningAgent, _ s: Indexe
 
 struct Tree: ParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Print the view tree with frames (UIKit and SwiftUI), numbered @N.",
+        abstract: "Print the view tree with frames (UIKit / AppKit and SwiftUI), numbered @N.",
         discussion: """
         Lines read `@N Type #identifier "text" (x,y wxh) [SwiftUI modifiers] {traits} !issues`. \
         Private framework views are omitted (their children are kept), system chrome (navigation \
-        bar, keyboard) is folded, and same-frame chains print as `A > B`. --all shows everything.
+        bar, keyboard; a Mac window's title bar) is folded, and same-frame chains print as `A > B`. --all shows everything.
         """
     )
 
@@ -368,7 +459,7 @@ struct Tree: ParsableCommand {
 
     func run() throws {
         try apvt.run(json: output.json) {
-            let (s, _) = try Session.snapshot(try Session.platform(target.platform), target.target)
+            let (s, _) = try Session.snapshot(target.target)
             if let save { try Session.save(s.snapshot, to: save) }
             if output.json {
                 printJSON(s.snapshot)
@@ -385,7 +476,7 @@ struct Tree: ParsableCommand {
                 formatter.root = first.ref
             }
             print(InspectReport.header(s.snapshot))
-            print(formatter.format(s, issues: Analyzer().analyze(s)))
+            print(formatter.format(s, issues: Analyzer(for: s.snapshot).analyze(s)))
             for note in s.snapshot.notes { print("note: \(note)") }
             return 0
         }
@@ -408,8 +499,8 @@ struct Query: ParsableCommand {
     func run() throws {
         try apvt.run(json: output.json) {
             let sel = try NodeSelector(selector)
-            let (s, _) = try Session.snapshot(try Session.platform(target.platform), target.target)
-            let issues = Analyzer().analyze(s)
+            let (s, _) = try Session.snapshot(target.target)
+            let issues = Analyzer(for: s.snapshot).analyze(s)
             let matches = sel.select(in: s, includeSystem: includeSystem)
             if output.json {
                 printJSON(matches.map { e -> QueryMatch in
@@ -441,7 +532,7 @@ struct Assert: ParsableCommand {
         discussion: """
         Every node the selector matches is checked; with no checks, assert checks that it exists. \
         References (--inside, --align-*, --left-of, …) are a selector that matches exactly one \
-        node, or `screen` / `safe-area`. Sizes take an operator: 150, ">=44", "<=100".
+        node, or `screen` / `safe-area` (macOS: `window`). Sizes take an operator: 150, ">=44", "<=100".
 
         EXAMPLES
           apvt assert '#follow' --visible --inside screen --min-width 44
@@ -457,8 +548,8 @@ struct Assert: ParsableCommand {
     var selector: String
 
     @Option(help: "Exactly this many nodes match.") var count: Int?
-    @Flag(help: "On screen, not hidden, not clipped, not zero-sized.") var visible = false
-    @Option(help: ArgumentHelp("Frame lies within screen, safe-area, or a node.", valueName: "ref")) var inside: [String] = []
+    @Flag(help: "On screen (macOS: inside the window), not hidden, not clipped, not zero-sized.") var visible = false
+    @Option(help: ArgumentHelp("Frame lies within screen (macOS: window), safe-area, or a node.", valueName: "ref")) var inside: [String] = []
     @Flag(help: "No truncated / squeezed / clipped issue on it.") var notTruncated = false
     @Flag(help: "Overlaps no other text or control.") var noOverlap = false
     @Flag(help: "No issue of any rule on it.") var noIssues = false
@@ -509,8 +600,8 @@ struct Assert: ParsableCommand {
             spec.spacing = try spacing.map(AssertionSpec.Comparison.init)
             spec.tolerance = tolerance
 
-            let (s, _) = try Session.snapshot(try Session.platform(target.platform), target.target)
-            let issues = Analyzer().analyze(s)
+            let (s, _) = try Session.snapshot(target.target)
+            let issues = Analyzer(for: s.snapshot).analyze(s)
             let results = try Assertions.evaluate(spec, selector: sel, in: s, issues: issues, includeSystem: includeSystem)
             let failed = results.filter { !$0.passed }
             if output.json {
@@ -535,7 +626,7 @@ struct AssertReport: Encodable {
 
 struct Screenshot: ParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Save a screenshot with issues outlined and labelled @N (red: error, orange: warning).",
+        abstract: "Save a screenshot (iOS: the screen; macOS: the window) with issues outlined and labelled @N (red: error, orange: warning).",
         discussion: "Dashed outlines are the other nodes an issue involves. --outline all also boxes every visible element in blue with its @N."
     )
 
@@ -551,19 +642,18 @@ struct Screenshot: ParsableCommand {
     func run() throws {
         try apvt.run(json: output.json) {
             guard target.snapshot == nil else { throw APVTError(.usage, "screenshot needs a running app, not --snapshot") }
-            let platform = try Session.platform(target.platform)
-            let agent = try Session.agent(platform, target.target)
+            let connection = try Session.connect(target.target)
             if plain {
-                try platform.screenshot(of: agent, to: URL(fileURLWithPath: path))
+                try connection.platform.screenshot(of: connection.agent, window: target.window, to: URL(fileURLWithPath: path))
                 if output.json { printJSON(["path": path]) } else { print("wrote \(path)") }
                 return 0
             }
             guard let mode = Annotator.Outline(rawValue: outline) else {
                 throw APVTError(.usage, "--outline takes issues or all")
             }
-            let s = IndexedSnapshot(try platform.snapshot(of: agent))
-            let issues = Analyzer().analyze(s)
-            try writeAnnotated(platform, agent, s, issues, path: path, outline: mode)
+            let s = IndexedSnapshot(try connection.snapshot(window: target.window))
+            let issues = Analyzer(for: s.snapshot).analyze(s)
+            try writeAnnotated(connection, window: windowOf(s, target), s, issues, path: path, outline: mode)
             if output.json {
                 printJSON(["path": path, "issues": issues.count] as [String: Any])
             } else {
@@ -581,15 +671,31 @@ struct Screenshot: ParsableCommand {
 
 struct Rules: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "List what apvt inspect checks, and how to fix each.")
+    @Option(help: ArgumentHelp("ios-simulator (default) or macos: the rules as they apply there.", valueName: "platform"))
+    var platform: String = Snapshot.iOSSimulator
     @OptionGroup var output: JSONFlag
 
     func run() throws {
-        if output.json {
-            printJSON(Rule.allCases.map { ["rule": $0.rawValue, "summary": $0.summary, "fix": $0.hint] })
-            return
-        }
-        for rule in Rule.allCases {
-            print("\(rule.rawValue): \(rule.summary)\n  fix: \(rule.hint)")
+        try apvt.run(json: output.json) {
+            let platform = try Session.platform(platform).id
+            if output.json {
+                printJSON(Rule.allCases.map { rule -> [String: Any] in
+                    ["rule": rule.rawValue, "summary": rule.summary(for: platform), "fix": rule.hint(for: platform),
+                     "default": rule.applies(to: platform), "notOnMacOS": !rule.applies(to: Snapshot.macOS)]
+                })
+                return 0
+            }
+            for rule in Rule.allCases {
+                let off = rule.applies(to: platform) ? "" : " [off here]"
+                print("\(rule.rawValue)\(off): \(rule.summary(for: platform))\n  fix: \(rule.hint(for: platform))")
+            }
+            if platform == Snapshot.macOS {
+                print("macOS: frames and the screen-edge rules (offscreen, wider-than-screen) are measured against the window being looked at.")
+            } else {
+                let off = Rule.allCases.filter { !$0.applies(to: Snapshot.macOS) }.map(\.rawValue).joined(separator: ", ")
+                print("macOS apps: \(off) are off by default (--rule turns one on), and the screen-edge rules measure against the window. apvt rules --platform macos shows the wording used there.")
+            }
+            return 0
         }
     }
 }
@@ -607,8 +713,8 @@ struct Debug: ParsableCommand {
 
         func run() throws {
             try apvt.run(json: false) {
-                let platform = try Session.platform(target.platform)
-                let data = try platform.rawRequest(AgentRequest(cmd: "swiftui-raw"), to: try Session.agent(platform, target.target))
+                let connection = try Session.connect(target.target)
+                let data = try connection.platform.rawRequest(AgentRequest(cmd: "swiftui-raw", window: target.window), to: connection.agent)
                 try data.write(to: URL(fileURLWithPath: path))
                 print("wrote \(path) (\(data.count) bytes)")
                 return 0
@@ -624,8 +730,8 @@ struct Debug: ParsableCommand {
 
         func run() throws {
             try apvt.run(json: false) {
-                let platform = try Session.platform(target.platform)
-                let data = try platform.rawRequest(AgentRequest(cmd: "methods", className: className, match: match), to: try Session.agent(platform, target.target))
+                let connection = try Session.connect(target.target)
+                let data = try connection.platform.rawRequest(AgentRequest(cmd: "methods", className: className, match: match), to: connection.agent)
                 let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
                 (object?["methods"] as? [String] ?? []).forEach { print($0) }
                 return 0

@@ -1,0 +1,23 @@
+name: APVTMacSample
+options:
+  bundleIdPrefix: dev.apvt
+  deploymentTarget:
+    macOS: "14.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    GENERATE_INFOPLIST_FILE: YES
+    # "Sign to Run Locally": builds on any Mac, no team needed.
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGN_IDENTITY: "-"
+targets:
+  APVTMacSample:
+    type: application
+    platform: macOS
+    sources: [Sources]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.apvt.macsample
+        # As Xcode's macOS app template has them: the sandbox makes the agent answer over pipes.
+        ENABLE_APP_SANDBOX: YES
+        ENABLE_HARDENED_RUNTIME: YES

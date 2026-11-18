@@ -8,27 +8,73 @@ public struct Snapshot: Codable, Sendable {
     public static let currentFormat = "apvt-snapshot/1"
 
     public var format: String
-    /// `ios-simulator` today; the model itself carries nothing iOS-specific.
+    /// `ios-simulator` or `macos`; the model itself carries nothing platform-specific.
     public var platform: String
     public var app: AppInfo
     public var device: DeviceInfo?
+    /// What frames are measured against: the device's screen (iOS), or the one window this
+    /// snapshot is about (macOS; origin its top-left corner, title bar included).
     public var screen: ScreenInfo
+    /// macOS: the window this snapshot is about.
+    public var window: WindowInfo?
+    /// macOS: the app's other visible windows (`--window` picks one of them).
+    public var otherWindows: [WindowInfo]?
     public var windows: [Node]
-    /// Auto Layout constraints UIKit broke because they could not all be satisfied.
+    /// Auto Layout constraints UIKit / AppKit broke because they could not all be satisfied.
     public var constraintBreaks: [ConstraintBreak]
     /// Things the reader should know about how complete this snapshot is.
     public var notes: [String]
 
     public init(platform: String, app: AppInfo, device: DeviceInfo? = nil, screen: ScreenInfo,
+                window: WindowInfo? = nil, otherWindows: [WindowInfo]? = nil,
                 windows: [Node], constraintBreaks: [ConstraintBreak] = [], notes: [String] = []) {
         self.format = Snapshot.currentFormat
         self.platform = platform
         self.app = app
         self.device = device
         self.screen = screen
+        self.window = window
+        self.otherWindows = otherWindows
         self.windows = windows
         self.constraintBreaks = constraintBreaks
         self.notes = notes
+    }
+}
+
+extension Snapshot {
+    public static let iOSSimulator = "ios-simulator"
+    public static let macOS = "macos"
+
+    /// What the frames are measured against, as output says it: `screen` or `window`.
+    public var surfaceName: String { platform == Snapshot.macOS ? "window" : "screen" }
+    /// The UI framework that owns Auto Layout on this platform.
+    public var layoutFramework: String { platform == Snapshot.macOS ? "AppKit" : "UIKit" }
+}
+
+/// One window of a macOS app. `index` is what `--window` takes: 1 is the frontmost.
+public struct WindowInfo: Codable, Sendable {
+    public var index: Int
+    public var title: String
+    public var width: Double
+    public var height: Double
+    public var key: Bool
+    /// `sheet`, `popover`, `panel`, … when it is not an ordinary window.
+    public var kind: String?
+    /// The window's top-left corner in global display points (origin: top-left of the primary
+    /// display) — what tools that click on the screen use. A frame's point + this = the screen's.
+    public var x: Double?
+    public var y: Double?
+
+    public init(index: Int, title: String, width: Double, height: Double, key: Bool, kind: String? = nil,
+                x: Double? = nil, y: Double? = nil) {
+        self.index = index
+        self.title = title
+        self.width = width
+        self.height = height
+        self.key = key
+        self.kind = kind
+        self.x = x
+        self.y = y
     }
 }
 
@@ -78,14 +124,18 @@ public struct ScreenInfo: Codable, Sendable {
 
 public enum NodeSource: String, Codable, Sendable {
     case uikit
+    case appkit
     case swiftui
+
+    /// A UIView or an NSView, as opposed to a SwiftUI view.
+    public var isNative: Bool { self != .swiftui }
 }
 
 public enum Role: String, Codable, Sendable {
     case window, container, text, image, control, shape, spacer, scroll, hosting, other
 }
 
-/// One view: a UIView, or a SwiftUI view that has a layout frame.
+/// One view: a UIView or NSView, or a SwiftUI view that has a layout frame.
 public struct Node: Codable, Sendable {
     /// `@N` in output; assigned by the host in pre-order, so the same UI numbers the same way.
     public var ref: Int?
@@ -95,7 +145,8 @@ public struct Node: Codable, Sendable {
     /// The runtime class (UIKit) or the full SwiftUI type, for when `type` is not enough.
     public var detail: String?
     public var role: Role
-    /// Screen points. For SwiftUI this is the layout frame; `.offset` moves descendants only.
+    /// Points from the top-left of the screen (iOS) or of the window (macOS). For SwiftUI this
+    /// is the layout frame; `.offset` moves descendants only.
     public var frame: Rect
     /// accessibilityIdentifier.
     public var identifier: String?

@@ -2,7 +2,8 @@ import Foundation
 import PackagePlugin
 
 /// Embeds the in-app agent's sources into APVTCore:
-/// `Sources/APVTModel/*.swift` (group `model`), `Agent/iOS/*.swift` (`agent-ios`) and
+/// `Sources/APVTModel/*.swift` (group `model`), `Agent/Shared/*.swift` (`agent-shared`),
+/// `Agent/iOS/*.swift` (`agent-ios`), `Agent/macOS/*.swift` (`agent-macos`) and
 /// `Agent/Loader/*.swift` (`loader`).
 @main
 struct EmbedAgentSources: BuildToolPlugin {
@@ -10,7 +11,9 @@ struct EmbedAgentSources: BuildToolPlugin {
         let root = context.package.directoryURL
         let groups: [(String, URL)] = [
             ("model", root.appending(path: "Sources/APVTModel")),
+            ("agent-shared", root.appending(path: "Agent/Shared")),
             ("agent-ios", root.appending(path: "Agent/iOS")),
+            ("agent-macos", root.appending(path: "Agent/macOS")),
             ("loader", root.appending(path: "Agent/Loader")),
         ]
         var inputs: [URL] = []

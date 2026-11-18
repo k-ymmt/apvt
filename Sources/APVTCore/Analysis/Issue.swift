@@ -37,6 +37,54 @@ public enum Rule: String, Codable, Sendable, CaseIterable {
         }
     }
 
+    /// Whether the rule has something to check on `platform`. A Mac window has no status bar or
+    /// home indicator to stay clear of, and a pointer does not need a 24pt target.
+    public func applies(to platform: String) -> Bool {
+        platform != Snapshot.macOS || (self != .unsafeArea && self != .smallTarget)
+    }
+
+    /// What `inspect` checks when no `--rule` is given.
+    public static func defaults(for platform: String) -> Set<Rule> {
+        Set(allCases.filter { $0.applies(to: platform) })
+    }
+
+    public func summary(for platform: String) -> String {
+        guard platform == Snapshot.macOS else { return summary }
+        switch self {
+        case .offscreen: return "content is cut off by, or lies beyond, the window's edge"
+        case .widerThanScreen: return "a container is wider than the window, pushing its content past the edge"
+        case .clipped: return "content is hidden by an ancestor that clips (clipsToBounds / .clipped())"
+        case .unsafeArea: return "not checked on macOS: a window has no status bar or home indicator"
+        case .smallTarget: return "not checked on macOS unless asked for (--rule small-target): a control smaller than 24x24pt"
+        case .ambiguousLayout: return "Auto Layout cannot decide the view's frame (AppKit hasAmbiguousLayout)"
+        case .brokenConstraint: return "AppKit broke a constraint because the constraints conflict"
+        case .truncated, .squeezed, .overlap: return summary
+        }
+    }
+
+    /// How to fix it on `platform`: SwiftUI and UIKit, or SwiftUI and AppKit.
+    public func hint(for platform: String) -> String {
+        guard platform == Snapshot.macOS else { return hint }
+        switch self {
+        case .offscreen:
+            return "Find the container that grew larger than the window (see wider-than-screen) or the fixed size/offset that moved it. SwiftUI: remove .fixedSize() / fixed .frame(width:) on long content, let Text wrap, use ViewThatFits or a ScrollView, or give the window a minimum size its content fits (.frame(minWidth:minHeight:) on the root view with .windowResizability(.contentSize)). AppKit: pin leading AND trailing to the superview instead of a fixed width, and set the window's contentMinSize."
+        case .widerThanScreen:
+            return "The listed suspects are fixed-size children. SwiftUI: drop .fixedSize(), replace .frame(width: N) with .frame(maxWidth: .infinity), add .lineLimit/.minimumScaleFactor, wrap in ScrollView(.horizontal), or raise the window's minimum width. AppKit: replace width constants with leading/trailing constraints or lower their priority."
+        case .clipped:
+            return "Grow the clipping container (or drop its fixed height) so its content fits, or remove clipping. SwiftUI: remove .frame(height:) + .clipped() on text; AppKit: give the container a height that follows its content (constraints to the content's bottom) instead of a constant, or leave clipsToBounds off."
+        case .truncated:
+            return "Give the text room: SwiftUI — remove fixed .frame(width:/height:), .lineLimit(1) or let it wrap with .fixedSize(horizontal: false, vertical: true); AppKit — NSTextField(wrappingLabelWithString:) with leading/trailing constraints instead of a fixed width, and for a button drop the width constant so it takes its intrinsic size. If one line is intended, shorten the text or let it compress (lineBreakMode, allowsDefaultTighteningForTruncation)."
+        case .squeezed:
+            return "A sibling took the space. SwiftUI: give the squeezed view .layoutPriority(1) or .fixedSize(), and let the long sibling truncate (.lineLimit(1)) or wrap; AppKit: raise its content compression resistance priority (setContentCompressionResistancePriority(_:for:))."
+        case .overlap:
+            return "Two views share space. SwiftUI: an .offset() or ZStack moved one onto another — position it with .overlay(alignment:) on the right view, or use padding/alignment instead of offset. AppKit: constrain one below/beside the other instead of to the same anchors."
+        case .smallTarget:
+            return "Make the clickable area larger: SwiftUI — .frame(minWidth:minHeight:) and .contentShape(Rectangle()); AppKit — a larger frame or controlSize."
+        case .unsafeArea, .ambiguousLayout, .brokenConstraint:
+            return hint
+        }
+    }
+
     /// How to fix it, for both UI frameworks.
     public var hint: String {
         switch self {
